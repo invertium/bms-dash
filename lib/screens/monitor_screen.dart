@@ -231,17 +231,23 @@ class _MetricChart extends StatelessWidget {
               showTitles: true,
               reservedSize: 46,
               interval: _niceInterval((maxY - minY) / 4),
-              getTitlesWidget: (value, meta) => Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: Text(
-                  value.toStringAsFixed(metric.decimals),
-                  style: const TextStyle(
-                    color: BmsColors.textMuted,
-                    fontSize: 11,
+              getTitlesWidget: (value, meta) {
+                // Edge labels collide with the nearest interval tick.
+                if (value <= minY || value >= maxY) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Text(
+                    value.toStringAsFixed(metric.decimals),
+                    style: const TextStyle(
+                      color: BmsColors.textMuted,
+                      fontSize: 11,
+                    ),
+                    textAlign: TextAlign.right,
                   ),
-                  textAlign: TextAlign.right,
-                ),
-              ),
+                );
+              },
             ),
           ),
           bottomTitles: AxisTitles(

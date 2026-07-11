@@ -158,11 +158,16 @@ class _CellRow extends StatelessWidget {
               height: 10,
               child: Stack(
                 children: [
-                  Container(color: BmsColors.gaugeTrack),
-                  FractionallySizedBox(
-                    widthFactor: fraction,
-                    child: const DecoratedBox(
-                      decoration: BoxDecoration(gradient: BmsColors.accent),
+                  const Positioned.fill(
+                    child: ColoredBox(color: BmsColors.gaugeTrack),
+                  ),
+                  Positioned.fill(
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: fraction,
+                      child: const DecoratedBox(
+                        decoration: BoxDecoration(gradient: BmsColors.accent),
+                      ),
                     ),
                   ),
                 ],

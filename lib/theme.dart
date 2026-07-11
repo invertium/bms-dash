@@ -76,7 +76,7 @@ ThemeData buildBmsTheme() {
       trackColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.selected)
             ? BmsColors.pink
-            : BmsColors.cardInner,
+            : BmsColors.gaugeTrack,
       ),
       trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
     ),
