@@ -447,24 +447,45 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _StatusPanel(
-                adapterState: _adapterState,
-                connectionSummary: _connectionSummary,
-                isConnecting: _isConnecting,
-                isScanning: _isScanning,
-                status: _status,
-              ),
-              const SizedBox(height: 16),
+              if (_session == null)
+                _StatusPanel(
+                  adapterState: _adapterState,
+                  connectionSummary: _connectionSummary,
+                  isConnecting: _isConnecting,
+                  isScanning: _isScanning,
+                  status: _status,
+                ),
               if (_session != null)
-                _BmsPanel(
-                  telemetry: _telemetry,
-                  mosfetsOn:
-                      _pendingMosfetToggle ?? _telemetry?.mosfetsOn ?? false,
-                  isTogglePending: _pendingMosfetToggle != null,
-                  onMosfetsChanged: _setMosfets,
-                  onDisconnect: _disconnect,
+                // The connected view can be taller than small screens, so it
+                // scrolls as a whole.
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _StatusPanel(
+                          adapterState: _adapterState,
+                          connectionSummary: _connectionSummary,
+                          isConnecting: _isConnecting,
+                          isScanning: _isScanning,
+                          status: _status,
+                        ),
+                        const SizedBox(height: 16),
+                        _BmsPanel(
+                          telemetry: _telemetry,
+                          mosfetsOn: _pendingMosfetToggle ??
+                              _telemetry?.mosfetsOn ??
+                              false,
+                          isTogglePending: _pendingMosfetToggle != null,
+                          onMosfetsChanged: _setMosfets,
+                          onDisconnect: _disconnect,
+                        ),
+                      ],
+                    ),
+                  ),
                 )
               else ...[
+                const SizedBox(height: 16),
                 Row(
                   children: [
                     Expanded(
@@ -745,8 +766,8 @@ class _BmsPanel extends StatelessWidget {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Protection active (status 0x'
-                        '${telemetry.protectionStatus.toRadixString(16)})',
+                        'Protection: '
+                        '${telemetry.activeProtections.join(', ')}',
                         style: theme.textTheme.bodySmall
                             ?.copyWith(color: BmsColors.warning),
                       ),

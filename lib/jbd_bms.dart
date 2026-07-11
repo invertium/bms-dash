@@ -185,7 +185,45 @@ class JbdBasicInfo {
 
   bool get mosfetsOn => chargeFetOn && dischargeFetOn;
 
-  bool get hasProtectionFault => protectionStatus != 0;
+  /// Bit 12 of the protection word: FETs disabled by software command
+  /// (register 0xE1) rather than by a protection trip.
+  static const int softwareLockBit = 0x1000;
+
+  static const List<String> _protectionNames = [
+    'Cell overvoltage',
+    'Cell undervoltage',
+    'Pack overvoltage',
+    'Pack undervoltage',
+    'Charge over-temperature',
+    'Charge under-temperature',
+    'Discharge over-temperature',
+    'Discharge under-temperature',
+    'Charge overcurrent',
+    'Discharge overcurrent',
+    'Short circuit',
+    'Frontend IC error',
+  ];
+
+  /// True only for real protection trips; the software FET lock is expected
+  /// whenever the MOSFETs are toggled off and is not a fault.
+  bool get hasProtectionFault => protectionStatus & ~softwareLockBit != 0;
+
+  bool get isSoftwareLocked => protectionStatus & softwareLockBit != 0;
+
+  /// Human-readable names of the active protection trips, with a hex
+  /// fallback for any bits this decoder does not know.
+  List<String> get activeProtections {
+    final names = <String>[
+      for (var bit = 0; bit < _protectionNames.length; bit++)
+        if (protectionStatus & (1 << bit) != 0) _protectionNames[bit],
+    ];
+    final unknown =
+        protectionStatus & ~softwareLockBit & ~((1 << _protectionNames.length) - 1);
+    if (unknown != 0) {
+      names.add('Unknown (0x${unknown.toRadixString(16)})');
+    }
+    return names;
+  }
 }
 
 /// A live link to a connected JBD BMS: polls basic info and sends MOSFET

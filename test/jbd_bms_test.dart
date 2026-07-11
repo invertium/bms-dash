@@ -91,6 +91,40 @@ void main() {
     });
   });
 
+  group('protection status decoding', () {
+    JbdBasicInfo infoWithProtection(int status) => JbdBasicInfo(
+          totalVoltage: 40,
+          current: 0,
+          remainingCapacityAh: 20,
+          nominalCapacityAh: 24,
+          cycleCount: 1,
+          protectionStatus: status,
+          socPercent: 80,
+          chargeFetOn: true,
+          dischargeFetOn: true,
+          cellCount: 10,
+          temperaturesCelsius: const [],
+        );
+
+    test('software FET lock alone is not a fault', () {
+      final info = infoWithProtection(JbdBasicInfo.softwareLockBit);
+      expect(info.hasProtectionFault, isFalse);
+      expect(info.isSoftwareLocked, isTrue);
+      expect(info.activeProtections, isEmpty);
+    });
+
+    test('real trips are named, unknown bits fall back to hex', () {
+      final info = infoWithProtection(0x0401);
+      expect(info.hasProtectionFault, isTrue);
+      expect(info.activeProtections, ['Cell overvoltage', 'Short circuit']);
+
+      expect(
+        infoWithProtection(0x8000).activeProtections,
+        ['Unknown (0x8000)'],
+      );
+    });
+  });
+
   group('JbdFrameAssembler', () {
     test('reassembles a frame split across BLE notification chunks', () {
       final assembler = JbdFrameAssembler();
