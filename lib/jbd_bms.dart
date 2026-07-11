@@ -20,6 +20,8 @@ class JbdProtocol {
   static const int readRequest = 0xa5;
   static const int writeRequest = 0x5a;
   static const int basicInfoRegister = 0x03;
+  static const int cellVoltagesRegister = 0x04;
+  static const int hardwareVersionRegister = 0x05;
   static const int mosfetRegister = 0xe1;
 
   /// Number of bytes in a frame besides the payload: start, type/register,
@@ -84,6 +86,21 @@ class JbdProtocol {
     }
     return (0x10000 - sum) & 0xffff;
   }
+
+  /// Decodes a register 0x04 payload (one big-endian u16 per cell, in mV)
+  /// into volts.
+  static List<double> parseCellVoltages(Uint8List payload) {
+    final data = ByteData.sublistView(payload);
+    return [
+      for (var i = 0; i + 1 < payload.length; i += 2) data.getUint16(i) / 1000,
+    ];
+  }
+
+  /// Decodes a register 0x05 payload: an ASCII version string.
+  static String parseHardwareVersion(Uint8List payload) {
+    return String.fromCharCodes(payload.where((b) => b >= 0x20 && b < 0x7f))
+        .trim();
+  }
 }
 
 /// Reassembles protocol frames from BLE notification chunks, which arrive in
@@ -137,6 +154,9 @@ class JbdBasicInfo {
     required this.dischargeFetOn,
     required this.cellCount,
     required this.temperaturesCelsius,
+    this.balanceStatus = 0,
+    this.softwareVersion = 0,
+    this.productionDateRaw = 0,
   });
 
   static JbdBasicInfo? fromPayload(Uint8List payload) {
@@ -163,6 +183,9 @@ class JbdBasicInfo {
       dischargeFetOn: fetStatus & 0x02 != 0,
       cellCount: payload[21],
       temperaturesCelsius: temperatures,
+      balanceStatus: (data.getUint16(14) << 16) | data.getUint16(12),
+      softwareVersion: payload[18],
+      productionDateRaw: data.getUint16(10),
     );
   }
 
@@ -183,7 +206,34 @@ class JbdBasicInfo {
   final int cellCount;
   final List<double> temperaturesCelsius;
 
+  /// One bit per cell (bit 0 = cell 1); set while the balancer bleeds that
+  /// cell.
+  final int balanceStatus;
+
+  /// Raw version byte; BCD-style nibbles, e.g. 0x20 -> "2.0".
+  final int softwareVersion;
+
+  /// Packed date: bits 15-9 year since 2000, 8-5 month, 4-0 day.
+  final int productionDateRaw;
+
   bool get mosfetsOn => chargeFetOn && dischargeFetOn;
+
+  bool isCellBalancing(int cellIndex) => balanceStatus >> cellIndex & 1 != 0;
+
+  String get softwareVersionLabel =>
+      '${softwareVersion >> 4}.${softwareVersion & 0xf}';
+
+  DateTime? get productionDate {
+    if (productionDateRaw == 0) {
+      return null;
+    }
+    final month = (productionDateRaw >> 5) & 0xf;
+    final day = productionDateRaw & 0x1f;
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+      return null;
+    }
+    return DateTime(2000 + (productionDateRaw >> 9), month, day);
+  }
 
   /// Bit 12 of the protection word: FETs disabled by software command
   /// (register 0xE1) rather than by a protection trip.
@@ -226,16 +276,39 @@ class JbdBasicInfo {
   }
 }
 
-/// A live link to a connected JBD BMS: polls basic info and sends MOSFET
-/// commands.
-class JbdBmsSession {
+/// The session surface the UI depends on, implemented by the real BLE
+/// session and by the in-app demo battery.
+abstract class BmsSession {
+  /// Emits telemetry as poll responses arrive; closes when the session ends.
+  Stream<JbdBasicInfo> get basicInfo;
+
+  /// Emits per-cell voltages (volts) as register 0x04 responses arrive.
+  Stream<List<double>> get cellVoltages;
+
+  String get remoteId;
+
+  /// Hardware version string, once read; null before the response arrives.
+  String? get hardwareVersion;
+
+  Future<void> setMosfets({required bool chargeOn, required bool dischargeOn});
+
+  Future<void> disconnect();
+
+  Future<void> dispose();
+}
+
+/// A live link to a connected JBD BMS: polls basic info and cell voltages,
+/// and sends MOSFET commands.
+class JbdBmsSession implements BmsSession {
   JbdBmsSession._(
     this._device,
     this._notifyCharacteristic,
     this._writeCharacteristic,
   );
 
-  static const Duration _pollInterval = Duration(seconds: 2);
+  /// Basic info and cell voltages alternate on this tick, so each register
+  /// still refreshes every two ticks.
+  static const Duration _pollInterval = Duration(seconds: 1);
   static const Duration _mosfetConfirmTimeout = Duration(milliseconds: 2500);
   static const Duration _mosfetConfirmReadInterval =
       Duration(milliseconds: 500);
@@ -247,10 +320,14 @@ class JbdBmsSession {
   final JbdFrameAssembler _assembler = JbdFrameAssembler();
   final StreamController<JbdBasicInfo> _basicInfoController =
       StreamController<JbdBasicInfo>.broadcast();
+  final StreamController<List<double>> _cellVoltagesController =
+      StreamController<List<double>>.broadcast();
 
   StreamSubscription<List<int>>? _notifySubscription;
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
   Timer? _pollTimer;
+  int _pollTick = 0;
+  String? _hardwareVersion;
   bool _disposed = false;
 
   /// Starts a session over the JBD service in [services], or returns null if
@@ -280,11 +357,17 @@ class JbdBmsSession {
     return session;
   }
 
-  /// Emits telemetry as poll responses arrive; closes when the session ends
-  /// or the device disconnects.
+  @override
   Stream<JbdBasicInfo> get basicInfo => _basicInfoController.stream;
 
+  @override
+  Stream<List<double>> get cellVoltages => _cellVoltagesController.stream;
+
+  @override
   String get remoteId => _device.remoteId.str;
+
+  @override
+  String? get hardwareVersion => _hardwareVersion;
 
   /// The BMS treats charge and discharge FETs independently; callers that
   /// want a single switch pass the same value for both.
@@ -293,6 +376,7 @@ class JbdBmsSession {
   /// so this resends until telemetry confirms the requested state. Completes
   /// only once the change is confirmed; throws [TimeoutException] if the BMS
   /// never reports it.
+  @override
   Future<void> setMosfets({
     required bool chargeOn,
     required bool dischargeOn,
@@ -331,7 +415,7 @@ class JbdBmsSession {
         .catchError((Object _) => false);
     final nudger = Timer.periodic(
       _mosfetConfirmReadInterval,
-      (_) => _requestBasicInfo(),
+      (_) => _requestRead(JbdProtocol.basicInfoRegister),
     );
     try {
       return await matched.timeout(
@@ -343,6 +427,7 @@ class JbdBmsSession {
     }
   }
 
+  @override
   Future<void> disconnect() async {
     await dispose();
     try {
@@ -352,6 +437,7 @@ class JbdBmsSession {
     }
   }
 
+  @override
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -361,6 +447,7 @@ class JbdBmsSession {
     await _notifySubscription?.cancel();
     await _connectionSubscription?.cancel();
     await _basicInfoController.close();
+    await _cellVoltagesController.close();
   }
 
   Future<void> _begin() async {
@@ -371,13 +458,25 @@ class JbdBmsSession {
         unawaited(dispose());
       }
     });
-    _pollTimer = Timer.periodic(_pollInterval, (_) => _requestBasicInfo());
-    await _requestBasicInfo();
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _onPollTick());
+    await _requestRead(JbdProtocol.hardwareVersionRegister);
+    await _requestRead(JbdProtocol.basicInfoRegister);
   }
 
-  Future<void> _requestBasicInfo() async {
+  void _onPollTick() {
+    _pollTick++;
+    unawaited(
+      _requestRead(
+        _pollTick.isEven
+            ? JbdProtocol.basicInfoRegister
+            : JbdProtocol.cellVoltagesRegister,
+      ),
+    );
+  }
+
+  Future<void> _requestRead(int register) async {
     try {
-      await _write(JbdProtocol.readCommand(JbdProtocol.basicInfoRegister));
+      await _write(JbdProtocol.readCommand(register));
     } catch (_) {
       // Poll writes can fail transiently (e.g. mid-disconnect); the next
       // tick retries and real disconnects close the session.
@@ -396,16 +495,27 @@ class JbdBmsSession {
 
   void _onChunk(List<int> chunk) {
     for (final frame in _assembler.addChunk(chunk)) {
-      final payload = JbdProtocol.parseResponse(
-        frame,
-        JbdProtocol.basicInfoRegister,
-      );
+      if (frame.length < 2 || _disposed) {
+        continue;
+      }
+      final register = frame[1];
+      final payload = JbdProtocol.parseResponse(frame, register);
       if (payload == null) {
         continue;
       }
-      final info = JbdBasicInfo.fromPayload(payload);
-      if (info != null && !_basicInfoController.isClosed) {
-        _basicInfoController.add(info);
+      switch (register) {
+        case JbdProtocol.basicInfoRegister:
+          final info = JbdBasicInfo.fromPayload(payload);
+          if (info != null && !_basicInfoController.isClosed) {
+            _basicInfoController.add(info);
+          }
+        case JbdProtocol.cellVoltagesRegister:
+          final cells = JbdProtocol.parseCellVoltages(payload);
+          if (cells.isNotEmpty && !_cellVoltagesController.isClosed) {
+            _cellVoltagesController.add(cells);
+          }
+        case JbdProtocol.hardwareVersionRegister:
+          _hardwareVersion = JbdProtocol.parseHardwareVersion(payload);
       }
     }
   }

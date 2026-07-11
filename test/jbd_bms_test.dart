@@ -91,6 +91,94 @@ void main() {
     });
   });
 
+  group('cell voltages (register 0x04)', () {
+    /// 4 cells: 3.341, 3.352, 3.298, 3.348 V.
+    final cellFrame = Uint8List.fromList([
+      0xdd, 0x04, 0x00, 0x08,
+      0x0d, 0x0d, 0x0d, 0x18, 0x0c, 0xe2, 0x0d, 0x14,
+      0xfe, 0xaa, // checksum
+      0x77,
+    ]);
+
+    test('builds the read command with a valid checksum', () {
+      expect(
+        JbdProtocol.readCommand(JbdProtocol.cellVoltagesRegister),
+        [0xdd, 0xa5, 0x04, 0x00, 0xff, 0xfc, 0x77],
+      );
+    });
+
+    test('decodes a response into volts', () {
+      final payload = JbdProtocol.parseResponse(
+        cellFrame,
+        JbdProtocol.cellVoltagesRegister,
+      );
+      expect(payload, isNotNull);
+      expect(
+        JbdProtocol.parseCellVoltages(payload!),
+        [3.341, 3.352, 3.298, 3.348],
+      );
+    });
+  });
+
+  group('extended basic-info fields', () {
+    test('balance bits cover both words (cells 1, 2 and 17)', () {
+      const info = JbdBasicInfo(
+        totalVoltage: 40,
+        current: 0,
+        remainingCapacityAh: 20,
+        nominalCapacityAh: 24,
+        cycleCount: 1,
+        protectionStatus: 0,
+        socPercent: 80,
+        chargeFetOn: true,
+        dischargeFetOn: true,
+        cellCount: 17,
+        temperaturesCelsius: [],
+        balanceStatus: (0x0001 << 16) | 0x0003,
+      );
+      expect(info.isCellBalancing(0), isTrue);
+      expect(info.isCellBalancing(1), isTrue);
+      expect(info.isCellBalancing(2), isFalse);
+      expect(info.isCellBalancing(16), isTrue);
+    });
+
+    test('software version and production date decode', () {
+      const info = JbdBasicInfo(
+        totalVoltage: 40,
+        current: 0,
+        remainingCapacityAh: 20,
+        nominalCapacityAh: 24,
+        cycleCount: 1,
+        protectionStatus: 0,
+        socPercent: 80,
+        chargeFetOn: true,
+        dischargeFetOn: true,
+        cellCount: 10,
+        temperaturesCelsius: [],
+        softwareVersion: 0x20,
+        // 2023-06-15: (23 << 9) | (6 << 5) | 15
+        productionDateRaw: 11983,
+      );
+      expect(info.softwareVersionLabel, '2.0');
+      expect(info.productionDate, DateTime(2023, 6, 15));
+
+      const blank = JbdBasicInfo(
+        totalVoltage: 40,
+        current: 0,
+        remainingCapacityAh: 20,
+        nominalCapacityAh: 24,
+        cycleCount: 1,
+        protectionStatus: 0,
+        socPercent: 80,
+        chargeFetOn: true,
+        dischargeFetOn: true,
+        cellCount: 10,
+        temperaturesCelsius: [],
+      );
+      expect(blank.productionDate, isNull);
+    });
+  });
+
   group('protection status decoding', () {
     JbdBasicInfo infoWithProtection(int status) => JbdBasicInfo(
           totalVoltage: 40,
