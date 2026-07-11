@@ -22,9 +22,10 @@ void main() {
 
     expect(find.text('JBD BMS'), findsOneWidget);
     expect(find.text('Disconnected'), findsOneWidget);
-    expect(find.text('Bluetooth: on'), findsOneWidget);
-    expect(find.text('Status: Ready to scan'), findsOneWidget);
+    expect(find.text('BT on'), findsOneWidget);
+    expect(find.text('Ready to scan'), findsOneWidget);
     expect(find.text('Scan'), findsOneWidget);
+    expect(find.text('Show all devices'), findsOneWidget);
     expect(find.byIcon(Icons.bluetooth_searching), findsOneWidget);
   });
 }

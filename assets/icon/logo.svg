@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#F1437E"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.55">
+      <stop offset="0" stop-color="#8B5CF6" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="#1C1B2E"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- battery terminal -->
+  <rect x="432" y="176" width="160" height="88" rx="32" fill="#4A4870"/>
+  <!-- battery body -->
+  <rect x="336" y="240" width="352" height="608" rx="80" fill="#343357"
+        stroke="#4A4870" stroke-width="20"/>
+  <!-- charge level -->
+  <rect x="392" y="512" width="240" height="280" rx="48" fill="url(#accent)"/>
+
+  <!-- lightning bolt -->
+  <path d="M 588 300 L 402 592 L 502 592 L 452 796 L 646 490 L 540 490 Z"
+        fill="#FFFFFF" stroke="#1C1B2E" stroke-width="26"
+        stroke-linejoin="round"/>
+</svg>

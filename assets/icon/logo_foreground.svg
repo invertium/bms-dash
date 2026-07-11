@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#F1437E"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Adaptive-icon foreground: artwork scaled into the ~66% safe zone -->
+  <g transform="translate(512 512) scale(0.62) translate(-512 -512)">
+    <rect x="432" y="176" width="160" height="88" rx="32" fill="#4A4870"/>
+    <rect x="336" y="240" width="352" height="608" rx="80" fill="#343357"
+          stroke="#4A4870" stroke-width="20"/>
+    <rect x="392" y="512" width="240" height="280" rx="48" fill="url(#accent)"/>
+    <path d="M 588 300 L 402 592 L 502 592 L 452 796 L 646 490 L 540 490 Z"
+          fill="#FFFFFF" stroke="#1C1B2E" stroke-width="26"
+          stroke-linejoin="round"/>
+  </g>
+</svg>
