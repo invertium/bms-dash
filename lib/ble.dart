@@ -107,7 +107,10 @@ abstract class BluetoothScannerClient {
 
   Future<void> stopScan();
 
-  Future<BmsConnection> connectAndDiscover(BmsScanDevice device);
+  Future<BmsConnection> connectAndDiscover(
+    BmsScanDevice device, {
+    Duration pollInterval,
+  });
 }
 
 class FlutterBlueScannerClient implements BluetoothScannerClient {
@@ -144,7 +147,10 @@ class FlutterBlueScannerClient implements BluetoothScannerClient {
   }
 
   @override
-  Future<BmsConnection> connectAndDiscover(BmsScanDevice device) async {
+  Future<BmsConnection> connectAndDiscover(
+    BmsScanDevice device, {
+    Duration pollInterval = JbdBmsSession.defaultPollInterval,
+  }) async {
     final bluetoothDevice = BluetoothDevice.fromId(device.remoteId);
     await bluetoothDevice.connect(
       license: License.nonprofit,
@@ -152,7 +158,11 @@ class FlutterBlueScannerClient implements BluetoothScannerClient {
     );
     try {
       final services = await bluetoothDevice.discoverServices(timeout: 15);
-      final session = await JbdBmsSession.start(bluetoothDevice, services);
+      final session = await JbdBmsSession.start(
+        bluetoothDevice,
+        services,
+        pollInterval: pollInterval,
+      );
       if (session == null) {
         // Nothing useful to do with a non-JBD device; don't hold the link.
         unawaited(bluetoothDevice.disconnect());

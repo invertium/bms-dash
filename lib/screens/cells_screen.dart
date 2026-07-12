@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../bms_state.dart';
+import '../settings.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
@@ -14,6 +15,8 @@ class CellsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(bmsControllerProvider);
     final cells = state.cellVoltages;
+    final millivolts = ref
+        .watch(settingsProvider.select((s) => s.cellVoltagesInMillivolts));
 
     if (cells == null || cells.isEmpty) {
       return const Center(
@@ -47,7 +50,7 @@ class CellsScreen extends ConsumerWidget {
               Expanded(
                 child: StatTile(
                   label: 'Lowest',
-                  value: '${minV.toStringAsFixed(3)} V',
+                  value: formatCellVoltage(minV, millivolts: millivolts),
                   footnote: 'cell ${minIndex + 1}',
                 ),
               ),
@@ -55,7 +58,7 @@ class CellsScreen extends ConsumerWidget {
               Expanded(
                 child: StatTile(
                   label: 'Highest',
-                  value: '${maxV.toStringAsFixed(3)} V',
+                  value: formatCellVoltage(maxV, millivolts: millivolts),
                   footnote: 'cell ${maxIndex + 1}',
                 ),
               ),
@@ -74,7 +77,7 @@ class CellsScreen extends ConsumerWidget {
               Expanded(
                 child: StatTile(
                   label: 'Average',
-                  value: '${avgV.toStringAsFixed(3)} V',
+                  value: formatCellVoltage(avgV, millivolts: millivolts),
                 ),
               ),
             ],
@@ -92,7 +95,9 @@ class CellsScreen extends ConsumerWidget {
                     ),
                     child: _CellRow(
                       index: i,
-                      voltage: cells[i],
+                      voltageLabel: millivolts
+                          ? '${(cells[i] * 1000).round()}'
+                          : cells[i].toStringAsFixed(3),
                       fraction:
                           ((cells[i] - rangeLow) / rangeSpan).clamp(0.0, 1.0),
                       isMin: i == minIndex,
@@ -123,7 +128,7 @@ class CellsScreen extends ConsumerWidget {
 class _CellRow extends StatelessWidget {
   const _CellRow({
     required this.index,
-    required this.voltage,
+    required this.voltageLabel,
     required this.fraction,
     required this.isMin,
     required this.isMax,
@@ -131,7 +136,7 @@ class _CellRow extends StatelessWidget {
   });
 
   final int index;
-  final double voltage;
+  final String voltageLabel;
   final double fraction;
   final bool isMin;
   final bool isMax;
@@ -179,7 +184,7 @@ class _CellRow extends StatelessWidget {
         SizedBox(
           width: 64,
           child: Text(
-            voltage.toStringAsFixed(3),
+            voltageLabel,
             textAlign: TextAlign.right,
             style: theme.textTheme.bodyMedium?.copyWith(
               color: BmsColors.textPrimary,

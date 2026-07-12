@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'about.dart';
 import 'bms_state.dart';
@@ -9,12 +11,15 @@ import 'screens/cells_screen.dart';
 import 'screens/connect_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/monitor_screen.dart';
+import 'screens/settings_screen.dart';
+import 'settings.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
 export 'ble.dart';
 export 'bms_state.dart';
 export 'jbd_bms.dart';
+export 'settings.dart';
 export 'theme.dart';
 
 void main() {
@@ -43,6 +48,22 @@ class BmsApp extends StatelessWidget {
   }
 }
 
+/// Last wakelock state actually requested, so redundant plugin calls (and
+/// any call at all in plugin-less environments like tests) are avoided.
+bool _keepAwakeActive = false;
+
+Future<void> _applyKeepAwake(bool enable) async {
+  if (_keepAwakeActive == enable) {
+    return;
+  }
+  _keepAwakeActive = enable;
+  try {
+    await WakelockPlus.toggle(enable: enable);
+  } catch (_) {
+    // Platform without wakelock support; purely cosmetic anyway.
+  }
+}
+
 class _Home extends ConsumerWidget {
   const _Home();
 
@@ -50,6 +71,9 @@ class _Home extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isConnected =
         ref.watch(bmsControllerProvider.select((s) => s.isConnected));
+    final keepAwake = isConnected &&
+        ref.watch(settingsProvider.select((s) => s.keepScreenAwake));
+    unawaited(_applyKeepAwake(keepAwake));
     return isConnected ? const ConnectedShell() : const ConnectScreen();
   }
 }
@@ -68,6 +92,8 @@ class _ConnectedShellState extends ConsumerState<ConnectedShell> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(bmsControllerProvider);
+    final packName =
+        ref.watch(settingsProvider.select((s) => s.packName));
 
     return Scaffold(
       appBar: AppBar(
@@ -78,7 +104,9 @@ class _ConnectedShellState extends ConsumerState<ConnectedShell> {
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                state.deviceName ?? 'BMS Dash',
+                packName.isNotEmpty
+                    ? packName
+                    : state.deviceName ?? 'BMS Dash',
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -105,6 +133,15 @@ class _ConnectedShellState extends ConsumerState<ConnectedShell> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const SettingsScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.settings_outlined),
+          ),
           IconButton(
             tooltip: 'About & support',
             onPressed: () => showAboutBmsDialog(context),

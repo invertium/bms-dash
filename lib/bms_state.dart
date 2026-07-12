@@ -7,29 +7,89 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'ble.dart';
 import 'demo_bms.dart';
 import 'jbd_bms.dart';
+import 'settings.dart';
 
 const _lastDeviceIdKey = 'last_device_id';
 const _lastDeviceNameKey = 'last_device_name';
 
-/// How many telemetry samples the monitor keeps (~1 h at one basic-info
-/// frame every 2 s).
-const telemetryHistoryCap = 1800;
+/// Hard upper bound on retained telemetry samples regardless of the
+/// configured time window (4 h at one basic-info frame per second).
+const telemetryHistoryCap = 14400;
 
 enum BmsPhase { disconnected, connecting, reconnecting, connected }
 
-/// Returns [history] plus [sample], evicting the oldest entries beyond
-/// [cap].
+/// Returns [history] plus [sample], evicting entries older than [window]
+/// (relative to the new sample) and anything beyond the [cap] safety bound.
 @visibleForTesting
 List<TelemetrySample> appendCapped(
   List<TelemetrySample> history,
   TelemetrySample sample, {
   int cap = telemetryHistoryCap,
+  Duration? window,
 }) {
-  final result = [...history, sample];
+  final cutoff = window == null ? null : sample.time.subtract(window);
+  final result = [
+    for (final s in history)
+      if (cutoff == null || s.time.isAfter(cutoff)) s,
+    sample,
+  ];
   if (result.length > cap) {
     result.removeRange(0, result.length - cap);
   }
   return result;
+}
+
+/// Charge/discharge energy integrated over the current session.
+@immutable
+class SessionEnergy {
+  const SessionEnergy({
+    this.chargedAh = 0,
+    this.chargedWh = 0,
+    this.dischargedAh = 0,
+    this.dischargedWh = 0,
+  });
+
+  final double chargedAh;
+  final double chargedWh;
+  final double dischargedAh;
+  final double dischargedWh;
+
+  bool get isEmpty =>
+      chargedAh == 0 && chargedWh == 0 && dischargedAh == 0 &&
+      dischargedWh == 0;
+}
+
+/// Integrates [current]'s readings over the time since [previous]. Gaps
+/// longer than [maxGap] (reconnects, app suspends) are skipped rather than
+/// integrated as if the last current had flowed the whole time.
+@visibleForTesting
+SessionEnergy accumulateEnergy(
+  SessionEnergy energy,
+  TelemetrySample previous,
+  TelemetrySample current, {
+  Duration maxGap = const Duration(seconds: 10),
+}) {
+  final dt = current.time.difference(previous.time);
+  if (dt <= Duration.zero || dt > maxGap) {
+    return energy;
+  }
+  final hours = dt.inMilliseconds / Duration.millisecondsPerHour;
+  final ah = current.current * hours;
+  final wh = current.power * hours;
+  if (ah > 0) {
+    return SessionEnergy(
+      chargedAh: energy.chargedAh + ah,
+      chargedWh: energy.chargedWh + wh,
+      dischargedAh: energy.dischargedAh,
+      dischargedWh: energy.dischargedWh,
+    );
+  }
+  return SessionEnergy(
+    chargedAh: energy.chargedAh,
+    chargedWh: energy.chargedWh,
+    dischargedAh: energy.dischargedAh - ah,
+    dischargedWh: energy.dischargedWh - wh,
+  );
 }
 
 @immutable
@@ -78,6 +138,7 @@ class BmsState {
     this.pendingMosfetToggle,
     this.hardwareVersion,
     this.isDemo = false,
+    this.energy = const SessionEnergy(),
   });
 
   final BmsPhase phase;
@@ -91,6 +152,7 @@ class BmsState {
   final bool? pendingMosfetToggle;
   final String? hardwareVersion;
   final bool isDemo;
+  final SessionEnergy energy;
 
   bool get isConnected => phase == BmsPhase.connected;
 
@@ -106,6 +168,7 @@ class BmsState {
     Object? pendingMosfetToggle = _unset,
     Object? hardwareVersion = _unset,
     bool? isDemo,
+    SessionEnergy? energy,
   }) {
     return BmsState(
       phase: phase ?? this.phase,
@@ -129,9 +192,23 @@ class BmsState {
           ? this.hardwareVersion
           : hardwareVersion as String?,
       isDemo: isDemo ?? this.isDemo,
+      energy: energy ?? this.energy,
     );
   }
 }
+
+/// Alerts derived from live telemetry and the configured thresholds;
+/// recomputes when either side changes.
+final activeAlertsProvider = Provider<List<String>>((ref) {
+  final settings = ref.watch(settingsProvider);
+  final state = ref.watch(bmsControllerProvider);
+  return evaluateAlerts(
+    settings: settings,
+    socPercent: state.telemetry?.socPercent,
+    temperaturesCelsius: state.telemetry?.temperaturesCelsius ?? const [],
+    cellVoltages: state.cellVoltages,
+  );
+});
 
 final bmsControllerProvider =
     NotifierProvider<BmsController, BmsState>(BmsController.new);
@@ -146,6 +223,9 @@ class BmsController extends Notifier<BmsState> {
   /// attempt can detect it was superseded or canceled.
   int _generation = 0;
   bool _autoReconnectAttempted = false;
+
+  /// Previous telemetry sample of the live session, for energy integration.
+  TelemetrySample? _lastSample;
 
   @override
   BmsState build() {
@@ -175,9 +255,12 @@ class BmsController extends Notifier<BmsState> {
 
     final BmsConnection connection;
     try {
-      connection = await ref
-          .read(bluetoothScannerClientProvider)
-          .connectAndDiscover(device);
+      connection = await ref.read(bluetoothScannerClientProvider).connectAndDiscover(
+            device,
+            pollInterval: Duration(
+              seconds: ref.read(settingsProvider).pollIntervalSeconds,
+            ),
+          );
     } catch (error) {
       if (generation != _generation) {
         return; // Canceled or superseded while connecting.
@@ -265,6 +348,7 @@ class BmsController extends Notifier<BmsState> {
 
   void _attach(BmsSession session, String name, {required bool isDemo}) {
     _session = session;
+    _lastSample = null;
     state = BmsState(
       phase: BmsPhase.connected,
       deviceName: name,
@@ -278,11 +362,22 @@ class BmsController extends Notifier<BmsState> {
           return;
         }
         final sample = TelemetrySample.fromBasicInfo(info, DateTime.now());
-        final history = appendCapped(state.history, sample);
+        final history = appendCapped(
+          state.history,
+          sample,
+          window: Duration(
+            minutes: ref.read(settingsProvider).historyWindowMinutes,
+          ),
+        );
+        final previous = _lastSample;
+        _lastSample = sample;
         state = state.copyWith(
           telemetry: info,
           history: history,
           hardwareVersion: session.hardwareVersion,
+          energy: previous == null
+              ? state.energy
+              : accumulateEnergy(state.energy, previous, sample),
         );
       },
       onDone: () {

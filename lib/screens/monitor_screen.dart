@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../bms_state.dart';
+import '../settings.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
@@ -37,7 +38,20 @@ enum _Metric {
     }
   }
 
-  String format(double value) => '${value.toStringAsFixed(decimals)} $unit';
+  /// [valueOf] converted for display (temperature honors the unit setting).
+  double? displayValueOf(TelemetrySample sample, TemperatureUnit tempUnit) {
+    final value = valueOf(sample);
+    if (value == null || this != _Metric.temperature) {
+      return value;
+    }
+    return tempUnit.fromCelsius(value);
+  }
+
+  String unitLabel(TemperatureUnit tempUnit) =>
+      this == _Metric.temperature ? tempUnit.suffix : unit;
+
+  String format(double value, TemperatureUnit tempUnit) =>
+      '${value.toStringAsFixed(decimals)} ${unitLabel(tempUnit)}';
 }
 
 enum _Window {
@@ -67,6 +81,8 @@ class _MonitorScreenState extends ConsumerState<MonitorScreen> {
   @override
   Widget build(BuildContext context) {
     final history = ref.watch(bmsControllerProvider.select((s) => s.history));
+    final tempUnit =
+        ref.watch(settingsProvider.select((s) => s.temperatureUnit));
 
     final cutoff = _window.duration == null
         ? null
@@ -107,10 +123,15 @@ class _MonitorScreenState extends ConsumerState<MonitorScreen> {
                       style: TextStyle(color: BmsColors.textSecondary),
                     ),
                   )
-                : _MetricChart(metric: _metric, samples: samples),
+                : _MetricChart(
+                    metric: _metric,
+                    samples: samples,
+                    tempUnit: tempUnit,
+                  ),
           ),
           const SizedBox(height: 16),
-          if (samples.isNotEmpty) _StatsRow(metric: _metric, samples: samples),
+          if (samples.isNotEmpty)
+            _StatsRow(metric: _metric, samples: samples, tempUnit: tempUnit),
         ],
       ),
     );
@@ -143,14 +164,21 @@ class _MonitorScreenState extends ConsumerState<MonitorScreen> {
 }
 
 class _StatsRow extends StatelessWidget {
-  const _StatsRow({required this.metric, required this.samples});
+  const _StatsRow({
+    required this.metric,
+    required this.samples,
+    required this.tempUnit,
+  });
 
   final _Metric metric;
   final List<TelemetrySample> samples;
+  final TemperatureUnit tempUnit;
 
   @override
   Widget build(BuildContext context) {
-    final values = [for (final s in samples) metric.valueOf(s)!];
+    final values = [
+      for (final s in samples) metric.displayValueOf(s, tempUnit)!,
+    ];
     final minValue = values.reduce(min);
     final maxValue = values.reduce(max);
     final avg = values.reduce((a, b) => a + b) / values.length;
@@ -158,15 +186,21 @@ class _StatsRow extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: StatTile(label: 'Min', value: metric.format(minValue)),
+          child: StatTile(
+            label: 'Min',
+            value: metric.format(minValue, tempUnit),
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: StatTile(label: 'Avg', value: metric.format(avg)),
+          child: StatTile(label: 'Avg', value: metric.format(avg, tempUnit)),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: StatTile(label: 'Max', value: metric.format(maxValue)),
+          child: StatTile(
+            label: 'Max',
+            value: metric.format(maxValue, tempUnit),
+          ),
         ),
       ],
     );
@@ -174,10 +208,15 @@ class _StatsRow extends StatelessWidget {
 }
 
 class _MetricChart extends StatelessWidget {
-  const _MetricChart({required this.metric, required this.samples});
+  const _MetricChart({
+    required this.metric,
+    required this.samples,
+    required this.tempUnit,
+  });
 
   final _Metric metric;
   final List<TelemetrySample> samples;
+  final TemperatureUnit tempUnit;
 
   static final _timeFormat = DateFormat.Hms();
 
@@ -194,7 +233,7 @@ class _MetricChart extends StatelessWidget {
       for (final sample in visible)
         FlSpot(
           sample.time.millisecondsSinceEpoch / 1000,
-          metric.valueOf(sample)!,
+          metric.displayValueOf(sample, tempUnit)!,
         ),
     ];
 
@@ -284,7 +323,7 @@ class _MetricChart extends StatelessWidget {
             getTooltipItems: (spots) => [
               for (final spot in spots)
                 LineTooltipItem(
-                  '${metric.format(spot.y)}\n',
+                  '${metric.format(spot.y, tempUnit)}\n',
                   const TextStyle(
                     color: BmsColors.textPrimary,
                     fontWeight: FontWeight.w700,

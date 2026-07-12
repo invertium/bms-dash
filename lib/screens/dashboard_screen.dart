@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 
 import '../bms_state.dart';
 import '../jbd_bms.dart';
+import '../settings.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
@@ -17,6 +18,9 @@ class DashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(bmsControllerProvider);
     final telemetry = state.telemetry;
+    final temperatureUnit =
+        ref.watch(settingsProvider.select((s) => s.temperatureUnit));
+    final alerts = ref.watch(activeAlertsProvider);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -25,6 +29,9 @@ class DashboardScreen extends ConsumerWidget {
         children: [
           _BatteryPanel(
             telemetry: telemetry,
+            temperatureUnit: temperatureUnit,
+            alerts: alerts,
+            energy: state.energy,
             mosfetsOn:
                 state.pendingMosfetToggle ?? telemetry?.mosfetsOn ?? false,
             isTogglePending: state.pendingMosfetToggle != null,
@@ -83,12 +90,18 @@ class DashboardScreen extends ConsumerWidget {
 class _BatteryPanel extends StatelessWidget {
   const _BatteryPanel({
     required this.telemetry,
+    required this.temperatureUnit,
+    required this.alerts,
+    required this.energy,
     required this.mosfetsOn,
     required this.isTogglePending,
     required this.onMosfetsChanged,
   });
 
   final JbdBasicInfo? telemetry;
+  final TemperatureUnit temperatureUnit;
+  final List<String> alerts;
+  final SessionEnergy energy;
   final bool mosfetsOn;
   final bool isTogglePending;
   final ValueChanged<bool> onMosfetsChanged;
@@ -133,6 +146,31 @@ class _BatteryPanel extends StatelessWidget {
                     ?.copyWith(color: BmsColors.textMuted),
               ),
             ),
+            if (alerts.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: BmsColors.pink.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.notifications_active_outlined,
+                        color: BmsColors.pink, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        alerts.join('\n'),
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: BmsColors.pink),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (telemetry.hasProtectionFault) ...[
               const SizedBox(height: 12),
               Container(
@@ -207,13 +245,36 @@ class _BatteryPanel extends StatelessWidget {
                     label: 'Temperature',
                     value: telemetry.temperaturesCelsius.isEmpty
                         ? '—'
-                        : '${telemetry.temperaturesCelsius.first.toStringAsFixed(1)} °C',
+                        : temperatureUnit
+                            .format(telemetry.temperaturesCelsius.first),
                     footnote: telemetry.temperaturesCelsius.length > 1
                         ? telemetry.temperaturesCelsius
                             .skip(1)
-                            .map((t) => '${t.toStringAsFixed(1)} °C')
+                            .map(temperatureUnit.format)
                             .join('  ')
                         : null,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: StatTile(
+                    label: 'Charged',
+                    value: '${energy.chargedAh.toStringAsFixed(2)} Ah',
+                    footnote: '${energy.chargedWh.toStringAsFixed(0)} Wh '
+                        'this session',
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: StatTile(
+                    label: 'Discharged',
+                    value: '${energy.dischargedAh.toStringAsFixed(2)} Ah',
+                    footnote: '${energy.dischargedWh.toStringAsFixed(0)} Wh '
+                        'this session',
                   ),
                 ),
               ],

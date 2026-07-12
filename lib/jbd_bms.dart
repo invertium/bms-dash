@@ -304,11 +304,12 @@ class JbdBmsSession implements BmsSession {
     this._device,
     this._notifyCharacteristic,
     this._writeCharacteristic,
+    this._pollInterval,
   );
 
-  /// Basic info and cell voltages alternate on this tick, so each register
-  /// still refreshes every two ticks.
-  static const Duration _pollInterval = Duration(seconds: 1);
+  /// Basic info and cell voltages alternate on the poll tick, so each
+  /// register refreshes every two ticks.
+  static const Duration defaultPollInterval = Duration(seconds: 1);
 
   /// The BLE link can stay "connected" while the BMS has stopped answering
   /// (e.g. it went to sleep or moved out of range without a clean
@@ -324,6 +325,7 @@ class JbdBmsSession implements BmsSession {
   final BluetoothDevice _device;
   final BluetoothCharacteristic _notifyCharacteristic;
   final BluetoothCharacteristic _writeCharacteristic;
+  final Duration _pollInterval;
   final JbdFrameAssembler _assembler = JbdFrameAssembler();
   final StreamController<JbdBasicInfo> _basicInfoController =
       StreamController<JbdBasicInfo>.broadcast();
@@ -342,8 +344,9 @@ class JbdBmsSession implements BmsSession {
   /// the device does not expose one.
   static Future<JbdBmsSession?> start(
     BluetoothDevice device,
-    List<BluetoothService> services,
-  ) async {
+    List<BluetoothService> services, {
+    Duration pollInterval = defaultPollInterval,
+  }) async {
     final service = services.firstWhereOrNull(
       (service) => service.uuid == JbdProtocol.serviceUuid,
     );
@@ -360,7 +363,7 @@ class JbdBmsSession implements BmsSession {
       return null;
     }
 
-    final session = JbdBmsSession._(device, notify, write);
+    final session = JbdBmsSession._(device, notify, write, pollInterval);
     await session._begin();
     return session;
   }

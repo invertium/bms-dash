@@ -59,7 +59,10 @@ class FakeBluetoothScannerClient implements BluetoothScannerClient {
   Future<void> stopScan() async {}
 
   @override
-  Future<BmsConnection> connectAndDiscover(BmsScanDevice device) async {
+  Future<BmsConnection> connectAndDiscover(
+    BmsScanDevice device, {
+    Duration pollInterval = JbdBmsSession.defaultPollInterval,
+  }) async {
     return BmsConnection(
       summary: DeviceConnectionSummary(
         name: device.name,

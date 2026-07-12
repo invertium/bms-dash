@@ -9,6 +9,7 @@ import '../ble.dart';
 import '../bms_state.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'settings_screen.dart';
 
 /// Scan/connect flow shown while no BMS session is live, including the
 /// launch-time auto-reconnect state and the demo-mode entry point.
@@ -201,6 +202,15 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const SettingsScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.settings_outlined),
+          ),
           IconButton(
             tooltip: 'About & support',
             onPressed: () => showAboutBmsDialog(context),
