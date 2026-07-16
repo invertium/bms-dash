@@ -179,6 +179,74 @@ void main() {
     });
   });
 
+  group('malformed payload rejection', () {
+    Uint8List basicPayload() => Uint8List.fromList(
+          JbdProtocol.parseResponse(
+            sampleBasicInfoFrame,
+            JbdProtocol.basicInfoRegister,
+          )!,
+        );
+
+    test('odd-length cell payload is a different layout, not a cell list',
+        () {
+      expect(
+        JbdProtocol.parseCellVoltages(
+          Uint8List.fromList([0x0d, 0x0d, 0x0d]),
+        ),
+        isEmpty,
+      );
+    });
+
+    test('basic info missing its declared NTC readings is rejected', () {
+      // The sample declares 1 NTC; chop off its two bytes.
+      final short = Uint8List.fromList(basicPayload().sublist(0, 23));
+      expect(JbdBasicInfo.fromPayload(short), isNull);
+    });
+
+    test('out-of-range SOC is rejected', () {
+      final payload = basicPayload();
+      payload[19] = 101;
+      expect(JbdBasicInfo.fromPayload(payload), isNull);
+    });
+
+    test('impossible cell counts are rejected', () {
+      final payload = basicPayload();
+      payload[21] = 0;
+      expect(JbdBasicInfo.fromPayload(payload), isNull);
+      payload[21] = 33;
+      expect(JbdBasicInfo.fromPayload(payload), isNull);
+    });
+
+    JbdBasicInfo dated(int raw) => JbdBasicInfo(
+          totalVoltage: 40,
+          current: 0,
+          remainingCapacityAh: 20,
+          nominalCapacityAh: 24,
+          cycleCount: 1,
+          protectionStatus: 0,
+          socPercent: 80,
+          chargeFetOn: true,
+          dischargeFetOn: true,
+          cellCount: 10,
+          temperaturesCelsius: const [],
+          productionDateRaw: raw,
+        );
+
+    test('impossible packed dates are rejected instead of normalized', () {
+      // 2024-02-31 must not become 2024-03-02.
+      expect(dated((24 << 9) | (2 << 5) | 31).productionDate, isNull);
+      // 2023-02-29: not a leap year.
+      expect(dated((23 << 9) | (2 << 5) | 29).productionDate, isNull);
+      // 2024-04-31: April has 30 days.
+      expect(dated((24 << 9) | (4 << 5) | 31).productionDate, isNull);
+      // 2024-02-29 is real and must survive.
+      expect(
+        dated((24 << 9) | (2 << 5) | 29).productionDate,
+        DateTime(2024, 2, 29),
+      );
+    });
+  });
+
   group('protection status decoding', () {
     JbdBasicInfo infoWithProtection(int status) => JbdBasicInfo(
           totalVoltage: 40,

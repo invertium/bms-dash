@@ -88,8 +88,12 @@ class JbdProtocol {
   }
 
   /// Decodes a register 0x04 payload (one big-endian u16 per cell, in mV)
-  /// into volts.
+  /// into volts. An odd-length payload is not a truncated-but-usable list,
+  /// it is a different layout — reject it instead of dropping a byte.
   static List<double> parseCellVoltages(Uint8List payload) {
+    if (payload.length.isOdd) {
+      return const [];
+    }
     final data = ByteData.sublistView(payload);
     return [
       for (var i = 0; i + 1 < payload.length; i += 2) data.getUint16(i) / 1000,
@@ -164,12 +168,24 @@ class JbdBasicInfo {
       return null;
     }
     final data = ByteData.sublistView(payload);
+    // A frame can be checksummed and still be from an incompatible layout;
+    // reject anything whose declared contents don't fit the payload or the
+    // protocol's defined ranges rather than publishing truncated/garbage
+    // telemetry.
     final ntcCount = payload[22];
-    final temperatures = <double>[];
-    for (var i = 0; i < ntcCount && 24 + i * 2 < payload.length; i++) {
-      // Per the JBD spec: 0.1 K units with a fixed 2731 offset.
-      temperatures.add((data.getUint16(23 + i * 2) - 2731) / 10);
+    if (payload.length < 23 + ntcCount * 2) {
+      return null;
     }
+    final socPercent = payload[19];
+    final cellCount = payload[21];
+    if (socPercent > 100 || cellCount < 1 || cellCount > 32) {
+      return null;
+    }
+    final temperatures = <double>[
+      // Per the JBD spec: 0.1 K units with a fixed 2731 offset.
+      for (var i = 0; i < ntcCount; i++)
+        (data.getUint16(23 + i * 2) - 2731) / 10,
+    ];
     final fetStatus = payload[20];
     return JbdBasicInfo(
       totalVoltage: data.getUint16(0) / 100,
@@ -178,10 +194,10 @@ class JbdBasicInfo {
       nominalCapacityAh: data.getUint16(6) / 100,
       cycleCount: data.getUint16(8),
       protectionStatus: data.getUint16(16),
-      socPercent: payload[19],
+      socPercent: socPercent,
       chargeFetOn: fetStatus & 0x01 != 0,
       dischargeFetOn: fetStatus & 0x02 != 0,
-      cellCount: payload[21],
+      cellCount: cellCount,
       temperaturesCelsius: temperatures,
       balanceStatus: (data.getUint16(14) << 16) | data.getUint16(12),
       softwareVersion: payload[18],
@@ -227,12 +243,19 @@ class JbdBasicInfo {
     if (productionDateRaw == 0) {
       return null;
     }
+    final year = 2000 + (productionDateRaw >> 9);
     final month = (productionDateRaw >> 5) & 0xf;
     final day = productionDateRaw & 0x1f;
     if (month < 1 || month > 12 || day < 1 || day > 31) {
       return null;
     }
-    return DateTime(2000 + (productionDateRaw >> 9), month, day);
+    final date = DateTime(year, month, day);
+    // DateTime normalizes impossible dates (Feb 31 -> Mar 2); an impossible
+    // packed date is garbage, not a date, so reject it instead.
+    if (date.year != year || date.month != month || date.day != day) {
+      return null;
+    }
+    return date;
   }
 
   /// Bit 12 of the protection word: FETs disabled by software command
@@ -313,10 +336,18 @@ class JbdBmsSession implements BmsSession {
 
   /// The BLE link can stay "connected" while the BMS has stopped answering
   /// (e.g. it went to sleep or moved out of range without a clean
-  /// disconnect). If no valid frame arrives for this long despite polls
-  /// every second, the session tears itself down so the UI does not show
-  /// frozen values as live data.
-  static const Duration _staleTimeout = Duration(seconds: 12);
+  /// disconnect). If no *accepted basic-info frame* arrives for this long,
+  /// the session tears itself down so the UI does not show frozen values as
+  /// live data. Cell-only or malformed traffic deliberately does not count:
+  /// the dashboard's voltage/current/SOC must be what is fresh.
+  ///
+  /// Basic info arrives every second poll tick; allow two full cycles plus
+  /// slack so a single lost frame does not drop the session.
+  Duration get _staleTimeout {
+    final scaled = _pollInterval * 4 + const Duration(seconds: 2);
+    const floor = Duration(seconds: 12);
+    return scaled > floor ? scaled : floor;
+  }
   static const Duration _mosfetConfirmTimeout = Duration(milliseconds: 2500);
   static const Duration _mosfetConfirmReadInterval =
       Duration(milliseconds: 500);
@@ -364,7 +395,15 @@ class JbdBmsSession implements BmsSession {
     }
 
     final session = JbdBmsSession._(device, notify, write, pollInterval);
-    await session._begin();
+    try {
+      await session._begin();
+    } catch (_) {
+      // _begin can fail partway (e.g. setNotifyValue throws after the
+      // notify subscription is installed); never leak the half-built
+      // session's timers and subscriptions.
+      await session.dispose();
+      rethrow;
+    }
     return session;
   }
 
@@ -412,29 +451,44 @@ class JbdBmsSession implements BmsSession {
 
   /// Waits for a telemetry frame reporting the requested FET state, nudging
   /// extra reads so confirmation does not depend on the slow poll cycle.
+  ///
+  /// Uses an explicitly owned subscription cancelled in `finally`:
+  /// `basicInfo.firstWhere(...).timeout(...)` would keep its listener on the
+  /// broadcast stream after the timeout, leaking one per failed attempt.
   Future<bool> _confirmFetState({
     required bool chargeOn,
     required bool dischargeOn,
   }) async {
-    final matched = basicInfo
-        .firstWhere(
-          (info) =>
-              info.chargeFetOn == chargeOn && info.dischargeFetOn == dischargeOn,
-        )
-        .then((_) => true)
-        // The stream closing (disconnect) must not confirm the change.
-        .catchError((Object _) => false);
+    final matched = Completer<bool>();
+    void settle(bool value) {
+      if (!matched.isCompleted) {
+        matched.complete(value);
+      }
+    }
+
+    final subscription = basicInfo.listen(
+      (info) {
+        if (info.chargeFetOn == chargeOn &&
+            info.dischargeFetOn == dischargeOn) {
+          settle(true);
+        }
+      },
+      onError: (Object _) => settle(false),
+      // The stream closing (disconnect) must not confirm the change.
+      onDone: () => settle(false),
+    );
     final nudger = Timer.periodic(
       _mosfetConfirmReadInterval,
       (_) => _requestRead(JbdProtocol.basicInfoRegister),
     );
     try {
-      return await matched.timeout(
+      return await matched.future.timeout(
         _mosfetConfirmTimeout,
         onTimeout: () => false,
       );
     } finally {
       nudger.cancel();
+      await subscription.cancel();
     }
   }
 
@@ -524,11 +578,13 @@ class JbdBmsSession implements BmsSession {
       if (payload == null) {
         continue;
       }
-      _restartStaleTimer();
       switch (register) {
         case JbdProtocol.basicInfoRegister:
           final info = JbdBasicInfo.fromPayload(payload);
           if (info != null && !_basicInfoController.isClosed) {
+            // Only decoded, published basic info counts as freshness; a
+            // checksummed-but-bogus frame must not keep a dead feed alive.
+            _restartStaleTimer();
             _basicInfoController.add(info);
           }
         case JbdProtocol.cellVoltagesRegister:

@@ -10,6 +10,19 @@ import '../settings.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
+/// Every [stride]-th sample capped near [maxPoints], always including the
+/// last one: the chart's right edge must be the newest reading, and the
+/// stats row under the chart uses all samples, so dropping the tail made
+/// the two disagree.
+@visibleForTesting
+List<T> downsampleForChart<T>(List<T> samples, {int maxPoints = 600}) {
+  final stride = (samples.length / maxPoints).ceil().clamp(1, 1 << 30);
+  return [
+    for (var i = 0; i < samples.length; i += stride) samples[i],
+    if (samples.isNotEmpty && (samples.length - 1) % stride != 0) samples.last,
+  ];
+}
+
 enum _Metric {
   voltage('Voltage', 'V', 2),
   current('Current', 'A', 2),
@@ -223,11 +236,7 @@ class _MetricChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Cap the point count so long windows stay smooth to render.
-    const maxPoints = 600;
-    final stride = (samples.length / maxPoints).ceil().clamp(1, 1 << 30);
-    final visible = [
-      for (var i = 0; i < samples.length; i += stride) samples[i],
-    ];
+    final visible = downsampleForChart(samples);
 
     final spots = [
       for (final sample in visible)

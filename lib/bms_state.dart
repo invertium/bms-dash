@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ble.dart';
 import 'demo_bms.dart';
@@ -57,6 +56,18 @@ class SessionEnergy {
   bool get isEmpty =>
       chargedAh == 0 && chargedWh == 0 && dischargedAh == 0 &&
       dischargedWh == 0;
+}
+
+/// Longest sample gap the energy integrator accepts for a session polled at
+/// [pollInterval]. Basic info arrives every second poll tick, so nominal
+/// samples are two intervals apart; allow one lost frame plus jitter, while
+/// still excluding app-suspend/reconnect-sized gaps. Never below the 10 s
+/// floor that fast poll rates use.
+@visibleForTesting
+Duration energyMaxGapForPollInterval(Duration pollInterval) {
+  final tolerant = pollInterval * 4 + const Duration(seconds: 2);
+  const floor = Duration(seconds: 10);
+  return tolerant > floor ? tolerant : floor;
 }
 
 /// Integrates [current]'s readings over the time since [previous]. Gaps
@@ -139,6 +150,7 @@ class BmsState {
     this.hardwareVersion,
     this.isDemo = false,
     this.energy = const SessionEnergy(),
+    this.commandError,
   });
 
   final BmsPhase phase;
@@ -153,6 +165,11 @@ class BmsState {
   final String? hardwareVersion;
   final bool isDemo;
   final SessionEnergy energy;
+
+  /// One-shot error from a command issued while connected (MOSFET toggle);
+  /// the connected shell shows it and clears it. [statusMessage] only
+  /// renders on the connect screen, which a connected user cannot see.
+  final String? commandError;
 
   bool get isConnected => phase == BmsPhase.connected;
 
@@ -169,6 +186,7 @@ class BmsState {
     Object? hardwareVersion = _unset,
     bool? isDemo,
     SessionEnergy? energy,
+    Object? commandError = _unset,
   }) {
     return BmsState(
       phase: phase ?? this.phase,
@@ -193,6 +211,9 @@ class BmsState {
           : hardwareVersion as String?,
       isDemo: isDemo ?? this.isDemo,
       energy: energy ?? this.energy,
+      commandError: identical(commandError, _unset)
+          ? this.commandError
+          : commandError as String?,
     );
   }
 }
@@ -306,7 +327,7 @@ class BmsController extends Notifier<BmsState> {
       return;
     }
     _autoReconnectAttempted = true;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = ref.read(sharedPreferencesProvider);
     final id = prefs.getString(_lastDeviceIdKey);
     if (id == null) {
       return;
@@ -340,15 +361,27 @@ class BmsController extends Notifier<BmsState> {
       if (identical(_session, session)) {
         state = state.copyWith(
           pendingMosfetToggle: null,
-          statusMessage: 'MOSFET command failed: $error',
+          commandError: 'MOSFET command failed: $error',
         );
       }
+    }
+  }
+
+  /// Called by the UI after displaying [BmsState.commandError].
+  void clearCommandError() {
+    if (state.commandError != null) {
+      state = state.copyWith(commandError: null);
     }
   }
 
   void _attach(BmsSession session, String name, {required bool isDemo}) {
     _session = session;
     _lastSample = null;
+    // Captured per session, like the poll interval itself: at slow poll
+    // rates samples are further apart and the integrator must tolerate that.
+    final energyMaxGap = energyMaxGapForPollInterval(
+      Duration(seconds: ref.read(settingsProvider).pollIntervalSeconds),
+    );
     state = BmsState(
       phase: BmsPhase.connected,
       deviceName: name,
@@ -377,7 +410,12 @@ class BmsController extends Notifier<BmsState> {
           hardwareVersion: session.hardwareVersion,
           energy: previous == null
               ? state.energy
-              : accumulateEnergy(state.energy, previous, sample),
+              : accumulateEnergy(
+                  state.energy,
+                  previous,
+                  sample,
+                  maxGap: energyMaxGap,
+                ),
         );
       },
       onDone: () {
@@ -408,7 +446,7 @@ class BmsController extends Notifier<BmsState> {
   }
 
   Future<void> _saveLastDevice(BmsScanDevice device) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = ref.read(sharedPreferencesProvider);
     await prefs.setString(_lastDeviceIdKey, device.remoteId);
     await prefs.setString(_lastDeviceNameKey, device.name);
   }

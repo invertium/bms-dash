@@ -67,6 +67,10 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
         _adapterState = state;
         if (state != BluetoothAdapterState.on) {
           _status = 'Bluetooth is ${state.label}';
+        } else if (_status.startsWith('Bluetooth is ')) {
+          // Coming back on: clear the stale adapter message, but never
+          // clobber an active scan/connect status.
+          _status = 'Ready to scan';
         }
       });
       if (state == BluetoothAdapterState.on) {

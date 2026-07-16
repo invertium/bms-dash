@@ -1,8 +1,16 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// The already-loaded preferences store. Overridden in `main()` (and in
+/// tests) before the first widget builds, so settings are available
+/// synchronously from the first frame — no async-load race where the first
+/// connection sees default values.
+final sharedPreferencesProvider = Provider<SharedPreferences>(
+  (_) => throw StateError(
+    'sharedPreferencesProvider must be overridden with a loaded instance',
+  ),
+);
 
 enum TemperatureUnit { celsius, fahrenheit }
 
@@ -111,29 +119,36 @@ class SettingsController extends Notifier<AppSettings> {
   static const _cellDeltaKey = 'settings_alert_cell_delta_mv';
   static const _tempAlertKey = 'settings_alert_temp_c';
 
+  /// Selectable values in the settings UI; loaded values outside these are
+  /// treated as corrupt and sanitized rather than trusted.
+  static const pollIntervalChoices = [1, 2, 3, 5];
+  static const historyWindowChoices = [30, 60, 120, 240];
+
+  SharedPreferences get _prefs => ref.read(sharedPreferencesProvider);
+
   @override
   AppSettings build() {
-    unawaited(_load());
-    return const AppSettings();
-  }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = AppSettings(
+    final prefs = ref.watch(sharedPreferencesProvider);
+    return AppSettings(
       temperatureUnit: (prefs.getBool(_tempUnitKey) ?? false)
           ? TemperatureUnit.fahrenheit
           : TemperatureUnit.celsius,
       cellVoltagesInMillivolts: prefs.getBool(_cellMvKey) ?? false,
-      pollIntervalSeconds: prefs.getInt(_pollIntervalKey) ?? 1,
-      historyWindowMinutes: prefs.getInt(_historyWindowKey) ?? 60,
+      pollIntervalSeconds:
+          _choice(prefs.getInt(_pollIntervalKey), pollIntervalChoices, 1),
+      historyWindowMinutes:
+          _choice(prefs.getInt(_historyWindowKey), historyWindowChoices, 60),
       packName: prefs.getString(_packNameKey) ?? '',
       keepScreenAwake: prefs.getBool(_keepAwakeKey) ?? false,
-      socLowAlertPercent: prefs.getInt(_socLowKey),
-      socHighAlertPercent: prefs.getInt(_socHighKey),
-      cellDeltaAlertMv: prefs.getInt(_cellDeltaKey),
-      temperatureAlertCelsius: prefs.getDouble(_tempAlertKey),
+      socLowAlertPercent: prefs.getInt(_socLowKey)?.clamp(1, 99),
+      socHighAlertPercent: prefs.getInt(_socHighKey)?.clamp(1, 100),
+      cellDeltaAlertMv: prefs.getInt(_cellDeltaKey)?.clamp(1, 1000),
+      temperatureAlertCelsius: prefs.getDouble(_tempAlertKey)?.clamp(0, 100),
     );
   }
+
+  static int _choice(int? stored, List<int> allowed, int fallback) =>
+      stored != null && allowed.contains(stored) ? stored : fallback;
 
   Future<void> setTemperatureUnit(TemperatureUnit unit) async {
     state = state.copyWith(temperatureUnit: unit);
@@ -157,8 +172,7 @@ class SettingsController extends Notifier<AppSettings> {
 
   Future<void> setPackName(String name) async {
     state = state.copyWith(packName: name.trim());
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_packNameKey, state.packName);
+    await _prefs.setString(_packNameKey, state.packName);
   }
 
   Future<void> setKeepScreenAwake(bool enabled) async {
@@ -183,30 +197,26 @@ class SettingsController extends Notifier<AppSettings> {
 
   Future<void> setTemperatureAlert(double? celsius) async {
     state = state.copyWith(temperatureAlertCelsius: celsius);
-    final prefs = await SharedPreferences.getInstance();
     if (celsius == null) {
-      await prefs.remove(_tempAlertKey);
+      await _prefs.remove(_tempAlertKey);
     } else {
-      await prefs.setDouble(_tempAlertKey, celsius);
+      await _prefs.setDouble(_tempAlertKey, celsius);
     }
   }
 
   Future<void> _setBool(String key, bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(key, value);
+    await _prefs.setBool(key, value);
   }
 
   Future<void> _setInt(String key, int value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(key, value);
+    await _prefs.setInt(key, value);
   }
 
   Future<void> _setIntOrRemove(String key, int? value) async {
-    final prefs = await SharedPreferences.getInstance();
     if (value == null) {
-      await prefs.remove(key);
+      await _prefs.remove(key);
     } else {
-      await prefs.setInt(key, value);
+      await _prefs.setInt(key, value);
     }
   }
 }

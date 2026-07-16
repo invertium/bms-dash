@@ -10,12 +10,14 @@ void main() {
     WidgetTester tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           bluetoothScannerClientProvider.overrideWithValue(
             const FakeBluetoothScannerClient(),
           ),
+          sharedPreferencesProvider.overrideWithValue(prefs),
         ],
         child: const BmsApp(),
       ),

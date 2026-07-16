@@ -3,6 +3,7 @@ import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'about.dart';
@@ -22,7 +23,7 @@ export 'jbd_bms.dart';
 export 'settings.dart';
 export 'theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // BLE plugins can surface transient platform errors on detached futures
   // (e.g. a write racing a disconnect). Log them instead of letting an
@@ -31,7 +32,15 @@ void main() {
     debugPrint('Uncaught error: $error\n$stack');
     return true;
   };
-  runApp(const ProviderScope(child: BmsApp()));
+  // Loaded before the first frame so saved settings (poll rate, pack name)
+  // apply to everything from the start, including launch auto-reconnect.
+  final prefs = await SharedPreferences.getInstance();
+  runApp(
+    ProviderScope(
+      overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+      child: const BmsApp(),
+    ),
+  );
 }
 
 class BmsApp extends StatelessWidget {
@@ -94,6 +103,19 @@ class _ConnectedShellState extends ConsumerState<ConnectedShell> {
     final state = ref.watch(bmsControllerProvider);
     final packName =
         ref.watch(settingsProvider.select((s) => s.packName));
+
+    // Command failures (MOSFET toggle timing out or being rejected) must be
+    // visible while connected; statusMessage only renders on the connect
+    // screen.
+    ref.listen(bmsControllerProvider.select((s) => s.commandError),
+        (_, error) {
+      if (error != null) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(error)));
+        ref.read(bmsControllerProvider.notifier).clearCommandError();
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(

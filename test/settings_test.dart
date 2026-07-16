@@ -4,21 +4,22 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Waits for an async condition driven by microtask-resolved futures.
-Future<void> pumpUntil(bool Function() condition) async {
-  for (var i = 0; i < 100 && !condition(); i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 1));
-  }
-  expect(condition(), isTrue, reason: 'condition never became true');
+/// Container wired to the mock preferences store, mirroring the override
+/// `main()` installs before the app starts.
+Future<ProviderContainer> containerWithPrefs() async {
+  final prefs = await SharedPreferences.getInstance();
+  return ProviderContainer(
+    overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
+  );
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('SettingsController', () {
-    test('starts with defaults', () {
+    test('starts with defaults', () async {
       SharedPreferences.setMockInitialValues({});
-      final container = ProviderContainer();
+      final container = await containerWithPrefs();
       addTearDown(container.dispose);
 
       final settings = container.read(settingsProvider);
@@ -36,7 +37,7 @@ void main() {
 
     test('persists changes across containers', () async {
       SharedPreferences.setMockInitialValues({});
-      final first = ProviderContainer();
+      final first = await containerWithPrefs();
       final controller = first.read(settingsProvider.notifier);
       await controller.setTemperatureUnit(TemperatureUnit.fahrenheit);
       await controller.setPollIntervalSeconds(3);
@@ -46,11 +47,9 @@ void main() {
       await controller.setTemperatureAlert(50);
       first.dispose();
 
-      final second = ProviderContainer();
+      final second = await containerWithPrefs();
       addTearDown(second.dispose);
-      await pumpUntil(
-        () => second.read(settingsProvider).pollIntervalSeconds == 3,
-      );
+      expect(second.read(settingsProvider).pollIntervalSeconds, 3);
       final loaded = second.read(settingsProvider);
       expect(loaded.temperatureUnit, TemperatureUnit.fahrenheit);
       expect(loaded.historyWindowMinutes, 240);
@@ -62,17 +61,45 @@ void main() {
 
     test('disabling an alert removes it', () async {
       SharedPreferences.setMockInitialValues({});
-      final first = ProviderContainer();
+      final first = await containerWithPrefs();
       final controller = first.read(settingsProvider.notifier);
       await controller.setCellDeltaAlert(80);
       await controller.setCellDeltaAlert(null);
       first.dispose();
 
-      final second = ProviderContainer();
+      final second = await containerWithPrefs();
       addTearDown(second.dispose);
-      // Give the async load a chance to finish; the value must stay null.
-      await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(second.read(settingsProvider).cellDeltaAlertMv, isNull);
+    });
+
+    test('saved values are available synchronously on cold start', () async {
+      // The first connection after launch reads the poll interval from the
+      // very first provider state; an async load would hand it the default.
+      SharedPreferences.setMockInitialValues({
+        'settings_poll_interval_s': 5,
+        'settings_pack_name': 'Shed pack',
+      });
+      final container = await containerWithPrefs();
+      addTearDown(container.dispose);
+
+      final settings = container.read(settingsProvider);
+      expect(settings.pollIntervalSeconds, 5);
+      expect(settings.packName, 'Shed pack');
+    });
+
+    test('corrupt stored values are sanitized on load', () async {
+      SharedPreferences.setMockInitialValues({
+        'settings_poll_interval_s': 4, // not an offered choice
+        'settings_history_window_min': 45, // not an offered choice
+        'settings_alert_soc_low': 200, // beyond any valid percentage
+      });
+      final container = await containerWithPrefs();
+      addTearDown(container.dispose);
+
+      final settings = container.read(settingsProvider);
+      expect(settings.pollIntervalSeconds, 1);
+      expect(settings.historyWindowMinutes, 60);
+      expect(settings.socLowAlertPercent, 99);
     });
   });
 

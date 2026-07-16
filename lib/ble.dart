@@ -152,11 +152,13 @@ class FlutterBlueScannerClient implements BluetoothScannerClient {
     Duration pollInterval = JbdBmsSession.defaultPollInterval,
   }) async {
     final bluetoothDevice = BluetoothDevice.fromId(device.remoteId);
-    await bluetoothDevice.connect(
-      license: License.nonprofit,
-      timeout: const Duration(seconds: 15),
-    );
+    // connect() lives inside the cleanup try: it can throw after a partial
+    // platform-side connection, which still needs the disconnect below.
     try {
+      await bluetoothDevice.connect(
+        license: License.nonprofit,
+        timeout: const Duration(seconds: 15),
+      );
       final services = await bluetoothDevice.discoverServices(timeout: 15);
       final session = await JbdBmsSession.start(
         bluetoothDevice,
