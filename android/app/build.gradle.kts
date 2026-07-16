@@ -7,8 +7,9 @@ plugins {
 }
 
 // Release signing lives outside version control: android/key.properties
-// points at the keystore. Without it, release builds fall back to the debug
-// key so anyone cloning the repo can still build.
+// points at the keystore. Without it, release builds fail (see the guard on
+// the package/bundle tasks below) instead of silently signing with the
+// debug key; fresh clones can still run debug builds.
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
@@ -48,10 +49,13 @@ android {
 
     buildTypes {
         release {
+            // Fail closed: without the keystore this stays null and the task
+            // guard below aborts, so a "release" artifact can never quietly
+            // carry the debug signature.
             signingConfig = if (keystorePropertiesFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                null
             }
             isMinifyEnabled = true
             isShrinkResources = true
@@ -59,6 +63,26 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+    }
+}
+
+// Abort release packaging when the real keystore is absent. doFirst keeps
+// the check out of debug builds' way: it only runs when a release artifact
+// task actually executes.
+tasks.configureEach {
+    if (name.contains("Release") &&
+        (name.startsWith("package") || name.startsWith("bundle") ||
+            name.startsWith("assemble"))
+    ) {
+        doFirst {
+            if (!keystorePropertiesFile.exists()) {
+                throw GradleException(
+                    "Release signing is not configured (android/key.properties " +
+                        "is missing); refusing to produce a release artifact " +
+                        "with the debug key. Use a debug build instead.",
+                )
+            }
         }
     }
 }

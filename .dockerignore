@@ -6,3 +6,11 @@ build/
 *.iml
 .flutter-plugins
 .flutter-plugins-dependencies
+# Never let secrets, git history, or local agent/IDE state into a build
+# context, even though the Dockerfile copies nothing today.
+.git/
+.android/
+.claude/
+android/key.properties
+android/keystore/
+android/local.properties

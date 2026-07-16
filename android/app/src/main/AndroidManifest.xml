@@ -17,10 +17,14 @@
         android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
 
+    <!-- allowBackup=false keeps Android's Auto Backup from uploading the
+         app's shared preferences (settings, last BMS id) to Google Drive;
+         the privacy policy promises nothing ever leaves the device. -->
     <application
         android:label="BMS Dash"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"

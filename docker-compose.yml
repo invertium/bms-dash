@@ -20,7 +20,8 @@ services:
   # Headless Android emulator for UI verification without a phone.
   # Start with: make emulator (never starts implicitly).
   emulator:
-    image: budtmo/docker-android:emulator_13.0
+    # Pinned by digest; see the note in the Dockerfile.
+    image: budtmo/docker-android:emulator_13.0@sha256:ee4c539e76131ff035ecba2ede2eda0b03ad5067905250d675bd32afb709c94f
     profiles: ["emulator"]
     devices:
       - /dev/kvm

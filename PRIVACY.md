@@ -1,6 +1,6 @@
 # BMS Dash — Privacy Policy
 
-*Last updated: July 15, 2026*
+*Last updated: July 16, 2026*
 
 BMS Dash is a dashboard for JBD / Xiaoxiang battery management systems. It
 is built to work entirely on your device.
@@ -27,7 +27,9 @@ Settings (units, alert thresholds, pack name) and the identifier of the
 last-connected BMS are stored locally on your device so the app can restore
 them, and nothing else. Battery telemetry shown in the app is held in
 memory for the current session only. Uninstalling the app removes all of
-it.
+it. The app also opts out of Android's cloud backup (`allowBackup=false`),
+so the operating system does not upload these local settings to Google
+Drive either.
 
 ## External links
 

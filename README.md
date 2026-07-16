@@ -87,8 +87,9 @@ Bluetooth, demo mode covers that. See
 ### Release builds
 
 Release builds are signed with the keystore referenced by
-`android/key.properties` (not in version control); without it they fall back
-to the debug key so the project still builds from a fresh clone:
+`android/key.properties` (not in version control). Without it, release
+builds fail on purpose — a release artifact never silently carries the
+debug signature. Fresh clones can still build and install debug APKs:
 
 ```sh
 docker compose run --rm flutter flutter build apk --release

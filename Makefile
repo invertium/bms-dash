@@ -1,3 +1,10 @@
+# docker-compose.yml runs containers as ${UID}:${GID}; shells do not export
+# these reliably, so pass the invoking user's identity explicitly (otherwise
+# compose silently falls back to 1000:1000 and generated files can end up
+# owned by the wrong user on other hosts).
+export UID := $(shell id -u)
+export GID := $(shell id -g)
+
 COMPOSE := docker compose
 FLUTTER := $(COMPOSE) run --rm --build flutter
 ADB := $(COMPOSE) run --rm --build adb

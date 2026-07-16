@@ -47,7 +47,8 @@ screen is 1440x3040 — scale coordinates from the displayed screenshot size.
 `docker compose run --rm flutter flutter build apk --release` — signs with
 `android/key.properties` + `android/keystore/upload-keystore.jks` (both
 gitignored, **irreplaceable — never delete**; back up before touching).
-Without them it silently falls back to the debug key. R8 minify + resource
+Without them release builds fail closed (guard in
+`android/app/build.gradle.kts`); debug builds are unaffected. R8 minify + resource
 shrinking are on; new `-dontwarn`/keep rules go in
 `android/app/proguard-rules.pro`.
 
