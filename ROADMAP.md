@@ -47,8 +47,8 @@ testable against demo mode).
 - **iOS build**: `flutter_blue_plus` already supports iOS; needs signing,
   permission plists, and a TestFlight pipeline.
 - **Distribution**: Play Store (in progress). F-Droid is out — it requires
-  an OSI-approved license and the project moved to a source-available,
-  noncommercial one after 1.0.0.
+  an OSI-approved license and the project moved to the PolyForm
+  Noncommercial license after 1.0.0.
 
 ## Explicitly out of scope
 

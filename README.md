@@ -123,12 +123,13 @@ See [ROADMAP.md](ROADMAP.md) for planned features.
 
 ## License
 
-[Source-available, noncommercial](LICENSE): you're free to use the app,
-read and modify the code, and build it for yourself. Commercial use and
-redistribution (including re-uploading to app stores) are not permitted —
-official builds come only from this repository's releases and the official
-store listing. Version 1.0.0 was released under MIT and stays MIT.
+[PolyForm Noncommercial 1.0.0](LICENSE): use, study, modify, and share the
+software freely for any noncommercial purpose; commercial use needs
+separate permission from the copyright holder. Version 1.0.0 was released
+under MIT and stays MIT. Official builds come from this repository's
+releases and the official Play listing.
 
-Contributions are welcome; by opening a PR you agree to the contribution
-terms in the [LICENSE](LICENSE). Bundled dependency licenses are viewable
-in-app under *About → Open-source licenses*.
+Contributions are welcome; by opening a PR you agree that your contribution
+is licensed under the project license and may be relicensed by the
+maintainer. Bundled dependency licenses are viewable in-app under
+*About → Open-source licenses*.
