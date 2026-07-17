@@ -2,6 +2,11 @@
 
 *Last updated: July 16, 2026*
 
+> Public copy (linked from the Play listing):
+> https://invertium.github.io/bms-dash/privacy.html — mirror of this file
+> from the [invertium.github.io](https://github.com/invertium/invertium.github.io)
+> repo; update both together.
+
 BMS Dash is a dashboard for JBD / Xiaoxiang battery management systems. It
 is built to work entirely on your device.
 

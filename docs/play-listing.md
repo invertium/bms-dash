@@ -86,8 +86,9 @@ units, and a demo mode that works without hardware.
 - Data safety: **No data collected, no data shared** (app has no INTERNET
   permission). Encryption/deletion questions become N/A.
 - Target audience: **18+** (or 13+; not designed for children)
-- Privacy policy URL: `https://github.com/invertium/bms_app/blob/main/PRIVACY.md`
-  (repo must be public first)
+- Privacy policy URL: `https://invertium.github.io/bms-dash/privacy.html`
+  (public GitHub Pages mirror of PRIVACY.md; works while this repo is
+  private — keep both in sync when the policy changes)
 - App access: all features available without credentials → "All
   functionality is available without special access"
 - Bluetooth permission declaration (if asked): the app communicates with a
