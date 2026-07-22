@@ -1,5 +1,8 @@
-Reliability and privacy update: the stale-connection watchdog now only
-trusts real telemetry, session energy stats count correctly at slower poll
-rates, failed MOSFET commands show an error while connected, saved settings
-apply from the very first connection, stricter validation of BMS responses,
-and Android cloud backup is disabled so nothing ever leaves your device.
+Support for password-protected BMS Bluetooth modules. If your pack asks for
+a password, you no longer have to open the Xiaoxiang app first to unlock
+communication — enter the 6-character password when prompted and BMS Dash
+remembers it for that pack, stored in the Android keystore.
+
+Testers: this is new and unverified on real locked hardware. If your pack
+unlocks but then shows no readings, please report it — that points at one
+specific known-missing step.
