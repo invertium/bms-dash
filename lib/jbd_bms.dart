@@ -4,6 +4,8 @@ import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'jbd_auth.dart';
+
 /// Frame codecs for the JBD/Xiaoxiang smart BMS serial protocol.
 ///
 /// The BMS exposes a UART-style GATT service 0xFF00 with notifications on
@@ -348,6 +350,10 @@ class JbdBmsSession implements BmsSession {
     const floor = Duration(seconds: 12);
     return scaled > floor ? scaled : floor;
   }
+  /// Per-step budget for the unlock handshake. The module answers each step
+  /// immediately, so this only has to cover a dropped notification before the
+  /// user is told the pack is not answering.
+  static const Duration _authStepTimeout = Duration(seconds: 4);
   static const Duration _mosfetConfirmTimeout = Duration(milliseconds: 2500);
   static const Duration _mosfetConfirmReadInterval =
       Duration(milliseconds: 500);
@@ -362,6 +368,8 @@ class JbdBmsSession implements BmsSession {
       StreamController<JbdBasicInfo>.broadcast();
   final StreamController<List<double>> _cellVoltagesController =
       StreamController<List<double>>.broadcast();
+  final StreamController<JbdAuthResponse> _authResponses =
+      StreamController<JbdAuthResponse>.broadcast();
 
   StreamSubscription<List<int>>? _notifySubscription;
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
@@ -371,12 +379,21 @@ class JbdBmsSession implements BmsSession {
   String? _hardwareVersion;
   bool _disposed = false;
 
+  /// True only while the unlock handshake is in flight; see [_onChunk].
+  bool _authenticating = false;
+
   /// Starts a session over the JBD service in [services], or returns null if
   /// the device does not expose one.
+  ///
+  /// [password] unlocks a password-protected Bluetooth module before polling
+  /// starts; pass null for the usual unprotected module. Throws
+  /// [JbdAuthException] if the module refuses it, so a wrong password fails
+  /// loudly instead of looking like a dead pack.
   static Future<JbdBmsSession?> start(
     BluetoothDevice device,
     List<BluetoothService> services, {
     Duration pollInterval = defaultPollInterval,
+    String? password,
   }) async {
     final service = services.firstWhereOrNull(
       (service) => service.uuid == JbdProtocol.serviceUuid,
@@ -396,7 +413,7 @@ class JbdBmsSession implements BmsSession {
 
     final session = JbdBmsSession._(device, notify, write, pollInterval);
     try {
-      await session._begin();
+      await session._begin(password: password);
     } catch (_) {
       // _begin can fail partway (e.g. setNotifyValue throws after the
       // notify subscription is installed); never leak the half-built
@@ -514,9 +531,12 @@ class JbdBmsSession implements BmsSession {
     await _connectionSubscription?.cancel();
     await _basicInfoController.close();
     await _cellVoltagesController.close();
+    // Closed last: an in-flight _authExchange watches this stream's done
+    // event to fail fast instead of waiting out its timeout.
+    await _authResponses.close();
   }
 
-  Future<void> _begin() async {
+  Future<void> _begin({String? password}) async {
     _notifySubscription = _notifyCharacteristic.onValueReceived.listen(_onChunk);
     await _notifyCharacteristic.setNotifyValue(true);
     _connectionSubscription = _device.connectionState.listen((state) {
@@ -524,10 +544,110 @@ class JbdBmsSession implements BmsSession {
         unawaited(dispose());
       }
     });
+    // Unlock before the first read: a locked module ignores register reads,
+    // so polling first would just look like an unresponsive pack.
+    if (password != null) {
+      _authenticating = true;
+      try {
+        await _authenticate(password);
+      } finally {
+        _authenticating = false;
+      }
+    }
     _pollTimer = Timer.periodic(_pollInterval, (_) => _onPollTick());
     _restartStaleTimer();
     await _requestRead(JbdProtocol.hardwareVersionRegister);
     await _requestRead(JbdProtocol.basicInfoRegister);
+  }
+
+  /// Runs the `0xFF 0xAA` handshake: app key, then challenge, then the
+  /// obfuscated password. Returns normally once the module reports the link
+  /// unlocked (or that it was never locked); throws [JbdAuthException]
+  /// otherwise.
+  Future<void> _authenticate(String password) async {
+    final mac = JbdAuthProtocol.parseMacAddress(remoteId);
+    if (mac == null) {
+      throw const JbdAuthException(
+        JbdAuthFailure.unsupportedAddress,
+        'This device does not expose a MAC address, which a password-'
+        'protected BMS needs to unlock',
+      );
+    }
+
+    final appKey = await _authExchange(
+      JbdAuthProtocol.appKeyFrame(),
+      JbdAuthProtocol.appKeyCommand,
+    );
+    if (appKey.value == JbdAuthProtocol.statusNoPasswordSet) {
+      // The module has no password; the saved one is simply unused.
+      return;
+    }
+    if (appKey.value != JbdAuthProtocol.statusOk) {
+      throw const JbdAuthException(
+        JbdAuthFailure.appKeyRejected,
+        'The BMS refused the unlock handshake',
+      );
+    }
+
+    final challenge = await _authExchange(
+      JbdAuthProtocol.randomByteRequestFrame(),
+      JbdAuthProtocol.randomByteCommand,
+    );
+    final result = await _authExchange(
+      JbdAuthProtocol.passwordFrame(
+        password: password,
+        macAddress: mac,
+        randomByte: challenge.value,
+      ),
+      JbdAuthProtocol.passwordCommand,
+    );
+    if (result.value != JbdAuthProtocol.statusOk) {
+      throw const JbdAuthException(
+        JbdAuthFailure.wrongPassword,
+        'The BMS rejected the password',
+      );
+    }
+  }
+
+  /// Writes [frame] and waits for the response to [expectedCommand],
+  /// ignoring any unrelated traffic that arrives meanwhile.
+  ///
+  /// The listener is subscribed *before* the write: these modules answer in
+  /// well under a millisecond, and awaiting the write first loses the race.
+  Future<JbdAuthResponse> _authExchange(
+    Uint8List frame,
+    int expectedCommand,
+  ) async {
+    final matched = Completer<JbdAuthResponse>();
+    final subscription = _authResponses.stream.listen(
+      (response) {
+        if (response.command == expectedCommand && !matched.isCompleted) {
+          matched.complete(response);
+        }
+      },
+      onDone: () {
+        if (!matched.isCompleted) {
+          matched.completeError(
+            const JbdAuthException(
+              JbdAuthFailure.timeout,
+              'The BMS disconnected during authentication',
+            ),
+          );
+        }
+      },
+    );
+    try {
+      await _write(frame);
+      return await matched.future.timeout(
+        _authStepTimeout,
+        onTimeout: () => throw const JbdAuthException(
+          JbdAuthFailure.timeout,
+          'The BMS did not answer the unlock request',
+        ),
+      );
+    } finally {
+      await subscription.cancel();
+    }
   }
 
   void _restartStaleTimer() {
@@ -569,6 +689,22 @@ class JbdBmsSession implements BmsSession {
   }
 
   void _onChunk(List<int> chunk) {
+    // Auth responses are self-contained in one notification and must never
+    // reach the assembler: their obfuscated payload can contain 0xDD, which
+    // would be mistaken for a frame start and desynchronise real telemetry.
+    //
+    // Gated on an in-flight handshake rather than on the 0xFF 0xAA prefix
+    // alone. A *continuation* chunk of a long telemetry frame carries raw
+    // payload bytes, which can begin 0xFF 0xAA by chance; sniffing every
+    // chunk would silently swallow one and corrupt that frame. Once the
+    // module is unlocked no auth traffic exists, so this path is closed.
+    if (_authenticating && JbdAuthProtocol.isAuthFrame(chunk)) {
+      final response = JbdAuthProtocol.parseResponse(chunk);
+      if (response != null && !_authResponses.isClosed) {
+        _authResponses.add(response);
+      }
+      return;
+    }
     for (final frame in _assembler.addChunk(chunk)) {
       if (frame.length < 2 || _disposed) {
         continue;

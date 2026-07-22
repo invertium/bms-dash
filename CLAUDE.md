@@ -57,3 +57,21 @@ shrinking are on; new `-dontwarn`/keep rules go in
 The app must only ever write BMS register 0xE1 (volatile MOSFET on/off).
 Never add factory-mode or EEPROM writes — a wrong byte can brick a real
 battery pack (see ROADMAP.md "out of scope").
+
+The `0xFF 0xAA` frames in `lib/jbd_auth.dart` are **not** an exception to
+that rule. They are a different protocol addressed to the Bluetooth module,
+not the BMS controller: they unlock the module's UART bridge for the current
+connection and touch no register, no EEPROM and no factory mode. Nothing
+survives a disconnect.
+
+Two commands in that protocol *are* out of scope and are deliberately
+unimplemented (there is a test asserting their absence):
+
+- `0x16` — overwrites the password stored in the module.
+- `0x1D` — escalates to the vendor's hardcoded root key (`JBDbtpwd!@#2023`).
+
+The vendor app sends `0x1D` after every successful login and syssi's ESPHome
+component treats it as mandatory, but no capture shows whether telemetry
+reads actually need it. If a password-protected pack authenticates yet
+returns no data, that is the reason — and enabling it is a deliberate
+decision to take, not a bug to fix silently.

@@ -107,9 +107,12 @@ abstract class BluetoothScannerClient {
 
   Future<void> stopScan();
 
+  /// [password] unlocks a password-protected Bluetooth module; null for the
+  /// usual unprotected one.
   Future<BmsConnection> connectAndDiscover(
     BmsScanDevice device, {
     Duration pollInterval,
+    String? password,
   });
 }
 
@@ -150,6 +153,7 @@ class FlutterBlueScannerClient implements BluetoothScannerClient {
   Future<BmsConnection> connectAndDiscover(
     BmsScanDevice device, {
     Duration pollInterval = JbdBmsSession.defaultPollInterval,
+    String? password,
   }) async {
     final bluetoothDevice = BluetoothDevice.fromId(device.remoteId);
     // connect() lives inside the cleanup try: it can throw after a partial
@@ -164,6 +168,7 @@ class FlutterBlueScannerClient implements BluetoothScannerClient {
         bluetoothDevice,
         services,
         pollInterval: pollInterval,
+        password: password,
       );
       if (session == null) {
         // Nothing useful to do with a non-JBD device; don't hold the link.

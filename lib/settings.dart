@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// The already-loaded preferences store. Overridden in `main()` (and in
@@ -11,6 +13,65 @@ final sharedPreferencesProvider = Provider<SharedPreferences>(
     'sharedPreferencesProvider must be overridden with a loaded instance',
   ),
 );
+
+final bmsPasswordStoreProvider = Provider<BmsPasswordStore>(
+  (_) => SecureBmsPasswordStore(),
+);
+
+/// Remembers the unlock password of each password-protected BMS, keyed by
+/// BLE address, so a locked pack reconnects without re-prompting.
+///
+/// Kept out of [AppSettings] and out of shared preferences: unlike the rest
+/// of the settings this is a credential, and it is the only thing standing
+/// between a stranger in range and the MOSFETs of someone's e-bike battery.
+abstract class BmsPasswordStore {
+  /// Addresses are compared case-insensitively; the scanner and the saved
+  /// last-device id do not always agree on case.
+  static String keyFor(String remoteId) =>
+      'bms_password_${remoteId.trim().toUpperCase()}';
+
+  /// The saved password for [remoteId], or null when that pack is not
+  /// password-protected as far as this app knows.
+  Future<String?> passwordFor(String remoteId);
+
+  Future<void> save(String remoteId, String password);
+
+  Future<void> clear(String remoteId);
+}
+
+/// Backs [BmsPasswordStore] with the platform keystore — on Android, an
+/// `EncryptedSharedPreferences` file whose key lives in hardware-backed
+/// Keystore, so the password is not readable from a plain filesystem dump
+/// the way a shared-preferences XML file is.
+class SecureBmsPasswordStore implements BmsPasswordStore {
+  SecureBmsPasswordStore({FlutterSecureStorage? storage})
+      : _storage = storage ?? const FlutterSecureStorage();
+
+  final FlutterSecureStorage _storage;
+
+  @override
+  Future<String?> passwordFor(String remoteId) async {
+    final String? stored;
+    try {
+      stored = await _storage.read(key: BmsPasswordStore.keyFor(remoteId));
+    } on PlatformException {
+      // The keystore entry can become undecryptable — a restored backup on
+      // new hardware is the usual cause. Treat that as "no password saved"
+      // so the user is prompted again, rather than failing the connection
+      // with an error they cannot act on.
+      return null;
+    }
+    return (stored == null || stored.isEmpty) ? null : stored;
+  }
+
+  @override
+  Future<void> save(String remoteId, String password) =>
+      _storage.write(key: BmsPasswordStore.keyFor(remoteId), value: password);
+
+  @override
+  Future<void> clear(String remoteId) =>
+      _storage.delete(key: BmsPasswordStore.keyFor(remoteId));
+}
 
 enum TemperatureUnit { celsius, fahrenheit }
 

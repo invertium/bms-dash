@@ -42,6 +42,8 @@ dependencies:
   device_info_plus: ^13.2.0
   fl_chart: ^1.1.0
   shared_preferences: ^2.5.3
+  # BMS unlock passwords only; every other setting stays in preferences.
+  flutter_secure_storage: ^10.3.1
   url_launcher: ^6.3.2
   package_info_plus: ^10.2.0
   wakelock_plus: ^1.6.1

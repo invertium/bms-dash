@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ble.dart';
 import 'demo_bms.dart';
+import 'jbd_auth.dart';
 import 'jbd_bms.dart';
 import 'settings.dart';
 
@@ -151,6 +152,7 @@ class BmsState {
     this.isDemo = false,
     this.energy = const SessionEnergy(),
     this.commandError,
+    this.passwordPrompt,
   });
 
   final BmsPhase phase;
@@ -171,6 +173,11 @@ class BmsState {
   /// renders on the connect screen, which a connected user cannot see.
   final String? commandError;
 
+  /// Set when a connection stopped because the pack's Bluetooth module wants
+  /// a password (or rejected the saved one). The connect screen prompts for
+  /// one and retries this device; null the rest of the time.
+  final BmsScanDevice? passwordPrompt;
+
   bool get isConnected => phase == BmsPhase.connected;
 
   static const Object _unset = Object();
@@ -187,6 +194,7 @@ class BmsState {
     bool? isDemo,
     SessionEnergy? energy,
     Object? commandError = _unset,
+    Object? passwordPrompt = _unset,
   }) {
     return BmsState(
       phase: phase ?? this.phase,
@@ -214,6 +222,9 @@ class BmsState {
       commandError: identical(commandError, _unset)
           ? this.commandError
           : commandError as String?,
+      passwordPrompt: identical(passwordPrompt, _unset)
+          ? this.passwordPrompt
+          : passwordPrompt as BmsScanDevice?,
     );
   }
 }
@@ -260,9 +271,13 @@ class BmsController extends Notifier<BmsState> {
     return const BmsState();
   }
 
+  /// [password] unlocks a password-protected pack. When omitted the saved
+  /// password for this device is used, so a locked pack reconnects on its
+  /// own; when given it replaces the saved one once the BMS accepts it.
   Future<void> connectToDevice(
     BmsScanDevice device, {
     bool isReconnect = false,
+    String? password,
   }) async {
     final generation = ++_generation;
     await _teardown();
@@ -272,7 +287,15 @@ class BmsController extends Notifier<BmsState> {
       statusMessage: isReconnect
           ? 'Reconnecting to ${device.name}'
           : 'Connecting to ${device.name}',
+      passwordPrompt: null,
     );
+
+    final passwords = ref.read(bmsPasswordStoreProvider);
+    final effectivePassword =
+        password ?? await passwords.passwordFor(device.remoteId);
+    if (generation != _generation) {
+      return; // Superseded while the keystore read was in flight.
+    }
 
     final BmsConnection connection;
     try {
@@ -281,7 +304,23 @@ class BmsController extends Notifier<BmsState> {
             pollInterval: Duration(
               seconds: ref.read(settingsProvider).pollIntervalSeconds,
             ),
+            password: effectivePassword,
           );
+    } on JbdAuthException catch (error) {
+      if (generation != _generation) {
+        return;
+      }
+      // A rejected password is the one failure the user can fix from here,
+      // so ask again instead of dead-ending on a status line. The stored
+      // password is left alone until a new one is proven to work.
+      final canRetry = error.failure == JbdAuthFailure.wrongPassword ||
+          error.failure == JbdAuthFailure.appKeyRejected;
+      state = state.copyWith(
+        phase: BmsPhase.disconnected,
+        statusMessage: error.message,
+        passwordPrompt: canRetry ? device : null,
+      );
+      return;
     } catch (error) {
       if (generation != _generation) {
         return; // Canceled or superseded while connecting.
@@ -293,6 +332,10 @@ class BmsController extends Notifier<BmsState> {
             : 'Connection failed: $error',
       );
       return;
+    }
+
+    if (password != null && generation == _generation) {
+      await passwords.save(device.remoteId, password);
     }
 
     final session = connection.session;
@@ -311,6 +354,19 @@ class BmsController extends Notifier<BmsState> {
     _attach(session, device.name, isDemo: false);
     unawaited(_saveLastDevice(device));
   }
+
+  /// Drops a pending password request, e.g. when the user dismisses the
+  /// prompt instead of entering one.
+  void dismissPasswordPrompt() {
+    if (state.passwordPrompt != null) {
+      state = state.copyWith(passwordPrompt: null);
+    }
+  }
+
+  /// Forgets the saved password for [remoteId], so the next connection to it
+  /// prompts again.
+  Future<void> forgetPassword(String remoteId) =>
+      ref.read(bmsPasswordStoreProvider).clear(remoteId);
 
   /// Connects the synthetic battery; behaves like a real session everywhere
   /// downstream. Demo connections are not persisted for auto-reconnect.

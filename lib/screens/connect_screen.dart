@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../about.dart';
 import '../ble.dart';
 import '../bms_state.dart';
+import '../jbd_auth.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'settings_screen.dart';
@@ -24,6 +25,9 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   final List<BmsScanDevice> _devices = [];
   final _permissions = BluetoothPermissionService();
   late final BluetoothScannerClient _bluetooth;
+
+  /// Guards against stacking dialogs when a retry fails while one is open.
+  bool _passwordDialogOpen = false;
 
   StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
   StreamSubscription<List<BmsScanDevice>>? _scanResultsSubscription;
@@ -183,11 +187,47 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
     await ref.read(bmsControllerProvider.notifier).connectToDevice(device);
   }
 
+  /// Asks for the pack's Bluetooth password and retries with it. Driven off
+  /// the controller's [BmsState.passwordPrompt] rather than the tap handler,
+  /// so a launch-time auto-reconnect to a locked pack prompts too.
+  Future<void> _promptForPassword(BmsScanDevice device) async {
+    if (_passwordDialogOpen) {
+      return;
+    }
+    _passwordDialogOpen = true;
+    try {
+      final password = await showDialog<String>(
+        context: context,
+        builder: (context) => _PasswordDialog(deviceName: device.name),
+      );
+      if (!mounted) {
+        return;
+      }
+      final controller = ref.read(bmsControllerProvider.notifier);
+      if (password == null) {
+        controller.dismissPasswordPrompt();
+        return;
+      }
+      await controller.connectToDevice(device, password: password);
+    } finally {
+      _passwordDialogOpen = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bmsState = ref.watch(bmsControllerProvider);
     final isBusy = bmsState.phase == BmsPhase.connecting ||
         bmsState.phase == BmsPhase.reconnecting;
+
+    ref.listen(
+      bmsControllerProvider.select((state) => state.passwordPrompt),
+      (_, device) {
+        if (device != null) {
+          unawaited(_promptForPassword(device));
+        }
+      },
+    );
 
     // Connection results land in the controller's status message; show the
     // freshest of the two sources.
@@ -632,6 +672,78 @@ class _DeviceList extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Prompts for the 6-character password of a locked BMS Bluetooth module.
+class _PasswordDialog extends StatefulWidget {
+  const _PasswordDialog({required this.deviceName});
+
+  final String deviceName;
+
+  @override
+  State<_PasswordDialog> createState() => _PasswordDialogState();
+}
+
+class _PasswordDialogState extends State<_PasswordDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  bool get _isValid => JbdAuthProtocol.isValidPassword(_controller.text);
+
+  void _submit() {
+    if (_isValid) {
+      Navigator.of(context).pop(_controller.text);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('BMS password'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${widget.deviceName} is password protected. Enter the password '
+            'you set in the Xiaoxiang app.',
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            obscureText: true,
+            maxLength: JbdAuthProtocol.passwordLength,
+            // Not TextInputType.number: the module accepts letters too when
+            // it was configured over serial, and a numeric keypad cannot
+            // type them.
+            keyboardType: TextInputType.visiblePassword,
+            decoration: const InputDecoration(
+              labelText: 'Password',
+              helperText: '6 characters, usually digits',
+            ),
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _isValid ? _submit : null,
+          child: const Text('Unlock'),
+        ),
+      ],
     );
   }
 }
