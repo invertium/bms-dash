@@ -30,17 +30,33 @@ class BmsScanDevice {
         : platformName.isNotEmpty
             ? platformName
             : 'Unnamed BLE device';
-    final lowerName = name.toLowerCase();
 
     return BmsScanDevice(
       name: name,
       remoteId: result.device.remoteId.str,
       rssi: result.rssi,
-      isLikelyBms: lowerName.contains('jbd') ||
-          lowerName.contains('xiaoxiang') ||
-          lowerName.contains('bms') ||
-          lowerName.contains('sp17'),
+      // The advertised service is the strongest signal: whatever the module
+      // is named, a device advertising the JBD UART service almost certainly
+      // speaks its protocol. Not every firmware advertises it, so the name
+      // heuristic stays as the fallback.
+      isLikelyBms: isLikelyBmsName(name) ||
+          result.advertisementData.serviceUuids
+              .contains(JbdProtocol.serviceUuid),
     );
+  }
+
+  /// Name-based half of the likely-BMS heuristic. Vendor brandings (JBD,
+  /// Xiaoxiang, LLT Power) and the bare module model codes some firmwares
+  /// advertise (`SP04S034`, `AP21S002`, ...). A false positive only mislabels
+  /// a row and sorts it higher, so this can afford to be generous.
+  static bool isLikelyBmsName(String name) {
+    final lowerName = name.toLowerCase();
+    return lowerName.contains('jbd') ||
+        lowerName.contains('xiaoxiang') ||
+        lowerName.contains('bms') ||
+        lowerName.contains('llt') ||
+        lowerName.contains('sp17') ||
+        RegExp(r'^(sp|ap)\d').hasMatch(lowerName);
   }
 
   final String name;
@@ -48,12 +64,37 @@ class BmsScanDevice {
   final int rssi;
   final bool isLikelyBms;
 
+  /// Likely BMS first, then a stable alphabetical order. Deliberately not
+  /// sorted by RSSI: signal strength jitters with every advertisement, and a
+  /// list that reorders under the user's finger cannot be tapped. The RSSI
+  /// readout still updates live, in place.
   static int compareForDisplay(BmsScanDevice a, BmsScanDevice b) {
     if (a.isLikelyBms != b.isLikelyBms) {
       return a.isLikelyBms ? -1 : 1;
     }
-    return b.rssi.compareTo(a.rssi);
+    final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    if (byName != 0) {
+      return byName;
+    }
+    return a.remoteId.compareTo(b.remoteId);
   }
+}
+
+/// Merges a scan snapshot into the devices already on screen, keyed by id.
+/// A device missing from [update] stays listed with its last known state:
+/// the scanner drops devices that go quiet for a few seconds (removeIfGone),
+/// and rows vanishing and reappearing — shifting the list under the user's
+/// finger — is worse than a briefly stale entry. The screen clears the list
+/// when a new scan starts, so nothing outlives the scan window.
+List<BmsScanDevice> mergeScanDevices(
+  List<BmsScanDevice> known,
+  List<BmsScanDevice> update,
+) {
+  final byId = {for (final device in known) device.remoteId: device};
+  for (final device in update) {
+    byId[device.remoteId] = device;
+  }
+  return byId.values.toList()..sort(BmsScanDevice.compareForDisplay);
 }
 
 class BluetoothPermissionService {

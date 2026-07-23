@@ -88,10 +88,10 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
           return;
         }
         setState(() {
+          final merged = mergeScanDevices(_devices, devices);
           _devices
             ..clear()
-            ..addAll(devices);
-          _devices.sort(BmsScanDevice.compareForDisplay);
+            ..addAll(merged);
         });
       },
       onError: (Object error) {
