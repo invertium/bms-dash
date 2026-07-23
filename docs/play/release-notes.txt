@@ -1,8 +1,7 @@
-Support for password-protected BMS Bluetooth modules. If your pack asks for
-a password, you no longer have to open the Xiaoxiang app first to unlock
-communication — enter the 6-character password when prompted and BMS Dash
-remembers it for that pack, stored in the Android keystore.
+Fixes the password prompt for protected packs never appearing: 1.2.0 only
+asked for a password if it already had one saved, so a locked pack looked
+like a dead device ("Waiting for battery data...", then disconnect). The
+app now probes every pack on connect, exactly like the vendor app does,
+and prompts when the pack says it is protected.
 
-Testers: this is new and unverified on real locked hardware. If your pack
-unlocks but then shows no readings, please report it — that points at one
-specific known-missing step.
+Unprotected packs are unaffected beyond a brief probe on connect.
