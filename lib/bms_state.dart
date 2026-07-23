@@ -310,10 +310,11 @@ class BmsController extends Notifier<BmsState> {
       if (generation != _generation) {
         return;
       }
-      // A rejected password is the one failure the user can fix from here,
-      // so ask again instead of dead-ending on a status line. The stored
-      // password is left alone until a new one is proven to work.
-      final canRetry = error.failure == JbdAuthFailure.wrongPassword ||
+      // A missing or rejected password is the one failure the user can fix
+      // from here, so ask for one instead of dead-ending on a status line.
+      // The stored password is left alone until a new one is proven to work.
+      final canRetry = error.failure == JbdAuthFailure.passwordRequired ||
+          error.failure == JbdAuthFailure.wrongPassword ||
           error.failure == JbdAuthFailure.appKeyRejected;
       state = state.copyWith(
         phase: BmsPhase.disconnected,

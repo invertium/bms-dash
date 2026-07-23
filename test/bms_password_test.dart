@@ -74,6 +74,26 @@ void main() {
     expect(scanner.lastPassword, '123123');
   });
 
+  test('a locked pack with no saved password prompts for one', () async {
+    final container = await containerWith(
+      FailingScannerClient(
+        const JbdAuthException(
+          JbdAuthFailure.passwordRequired,
+          'This pack is password protected',
+        ),
+      ),
+    );
+
+    await container
+        .read(bmsControllerProvider.notifier)
+        .connectToDevice(_device);
+
+    final state = container.read(bmsControllerProvider);
+    expect(state.passwordPrompt, _device);
+    expect(state.phase, BmsPhase.disconnected);
+    expect(state.statusMessage, 'This pack is password protected');
+  });
+
   test('a rejected password asks the user instead of dead-ending', () async {
     final scanner = RejectingScannerClient();
     final container = await containerWith(scanner);

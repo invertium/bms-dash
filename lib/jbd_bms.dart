@@ -354,6 +354,12 @@ class JbdBmsSession implements BmsSession {
   /// immediately, so this only has to cover a dropped notification before the
   /// user is told the pack is not answering.
   static const Duration _authStepTimeout = Duration(seconds: 4);
+
+  /// Budget for the app-key probe when no password is saved. Modules that
+  /// predate the auth protocol never answer it, so every connect to one
+  /// waits this out before polling starts — kept short for that reason.
+  /// Locked modules answer well within it.
+  static const Duration _authProbeTimeout = Duration(seconds: 2);
   static const Duration _mosfetConfirmTimeout = Duration(milliseconds: 2500);
   static const Duration _mosfetConfirmReadInterval =
       Duration(milliseconds: 500);
@@ -386,9 +392,11 @@ class JbdBmsSession implements BmsSession {
   /// the device does not expose one.
   ///
   /// [password] unlocks a password-protected Bluetooth module before polling
-  /// starts; pass null for the usual unprotected module. Throws
-  /// [JbdAuthException] if the module refuses it, so a wrong password fails
-  /// loudly instead of looking like a dead pack.
+  /// starts; pass null when none is saved. The module is always probed for
+  /// protection, so a locked pack with no saved password throws a
+  /// [JbdAuthFailure.passwordRequired] [JbdAuthException] (the UI's cue to
+  /// prompt for one) instead of looking like a dead pack, and a wrong
+  /// password fails loudly too.
   static Future<JbdBmsSession?> start(
     BluetoothDevice device,
     List<BluetoothService> services, {
@@ -544,15 +552,15 @@ class JbdBmsSession implements BmsSession {
         unawaited(dispose());
       }
     });
-    // Unlock before the first read: a locked module ignores register reads,
-    // so polling first would just look like an unresponsive pack.
-    if (password != null) {
-      _authenticating = true;
-      try {
-        await _authenticate(password);
-      } finally {
-        _authenticating = false;
-      }
+    // Probe/unlock before the first read — even with no password on file,
+    // since the probe is the only way to learn that a pack is locked. A
+    // locked module ignores register reads, so polling first would just
+    // look like an unresponsive pack.
+    _authenticating = true;
+    try {
+      await _authenticate(password);
+    } finally {
+      _authenticating = false;
     }
     _pollTimer = Timer.periodic(_pollInterval, (_) => _onPollTick());
     _restartStaleTimer();
@@ -560,63 +568,26 @@ class JbdBmsSession implements BmsSession {
     await _requestRead(JbdProtocol.basicInfoRegister);
   }
 
-  /// Runs the `0xFF 0xAA` handshake: app key, then challenge, then the
-  /// obfuscated password. Returns normally once the module reports the link
-  /// unlocked (or that it was never locked); throws [JbdAuthException]
-  /// otherwise.
-  Future<void> _authenticate(String password) async {
-    final mac = JbdAuthProtocol.parseMacAddress(remoteId);
-    if (mac == null) {
-      throw const JbdAuthException(
-        JbdAuthFailure.unsupportedAddress,
-        'This device does not expose a MAC address, which a password-'
-        'protected BMS needs to unlock',
-      );
-    }
-
-    final appKey = await _authExchange(
-      JbdAuthProtocol.appKeyFrame(),
-      JbdAuthProtocol.appKeyCommand,
+  Future<void> _authenticate(String? password) {
+    return authenticateJbdModule(
+      exchange: _authExchange,
+      remoteId: remoteId,
+      password: password,
+      probeTimeout: _authProbeTimeout,
+      stepTimeout: _authStepTimeout,
     );
-    if (appKey.value == JbdAuthProtocol.statusNoPasswordSet) {
-      // The module has no password; the saved one is simply unused.
-      return;
-    }
-    if (appKey.value != JbdAuthProtocol.statusOk) {
-      throw const JbdAuthException(
-        JbdAuthFailure.appKeyRejected,
-        'The BMS refused the unlock handshake',
-      );
-    }
-
-    final challenge = await _authExchange(
-      JbdAuthProtocol.randomByteRequestFrame(),
-      JbdAuthProtocol.randomByteCommand,
-    );
-    final result = await _authExchange(
-      JbdAuthProtocol.passwordFrame(
-        password: password,
-        macAddress: mac,
-        randomByte: challenge.value,
-      ),
-      JbdAuthProtocol.passwordCommand,
-    );
-    if (result.value != JbdAuthProtocol.statusOk) {
-      throw const JbdAuthException(
-        JbdAuthFailure.wrongPassword,
-        'The BMS rejected the password',
-      );
-    }
   }
 
-  /// Writes [frame] and waits for the response to [expectedCommand],
-  /// ignoring any unrelated traffic that arrives meanwhile.
+  /// Writes [frame] and waits up to [timeout] for the response to
+  /// [expectedCommand], ignoring any unrelated traffic that arrives
+  /// meanwhile.
   ///
   /// The listener is subscribed *before* the write: these modules answer in
   /// well under a millisecond, and awaiting the write first loses the race.
   Future<JbdAuthResponse> _authExchange(
     Uint8List frame,
     int expectedCommand,
+    Duration timeout,
   ) async {
     final matched = Completer<JbdAuthResponse>();
     final subscription = _authResponses.stream.listen(
@@ -639,7 +610,7 @@ class JbdBmsSession implements BmsSession {
     try {
       await _write(frame);
       return await matched.future.timeout(
-        _authStepTimeout,
+        timeout,
         onTimeout: () => throw const JbdAuthException(
           JbdAuthFailure.timeout,
           'The BMS did not answer the unlock request',
@@ -738,5 +709,99 @@ class JbdBmsSession implements BmsSession {
           _hardwareVersion = JbdProtocol.parseHardwareVersion(payload);
       }
     }
+  }
+}
+
+/// One unlock-protocol exchange: writes [frame], returns the module's
+/// response to [expectedCommand], or throws a [JbdAuthFailure.timeout]
+/// [JbdAuthException] after [timeout].
+typedef JbdAuthExchange = Future<JbdAuthResponse> Function(
+  Uint8List frame,
+  int expectedCommand,
+  Duration timeout,
+);
+
+/// Runs the `0xFF 0xAA` unlock flow over [exchange]: the app-key probe,
+/// then the challenge and obfuscated password when the module wants one.
+/// Returns normally once the module reports the link unlocked or not locked
+/// at all; throws [JbdAuthException] otherwise.
+///
+/// The probe is sent even with no [password] — it is the only way to learn
+/// that a pack is locked, and the vendor app sends the same frame on every
+/// connect. The outcomes:
+///
+/// - The probe times out: the module predates the auth protocol and cannot
+///   be locked, so proceed unauthenticated. With a saved [password] silence
+///   is an error instead — that module spoke the protocol when the password
+///   was saved, so a mute one is genuinely unresponsive.
+/// - The module reports no password set: proceed; a saved [password] is
+///   simply unused.
+/// - A password is required but [password] is null: throw
+///   [JbdAuthFailure.passwordRequired], the UI's cue to prompt for one.
+/// - Otherwise run the challenge/password steps; a rejection throws
+///   [JbdAuthFailure.wrongPassword].
+Future<void> authenticateJbdModule({
+  required JbdAuthExchange exchange,
+  required String remoteId,
+  required String? password,
+  required Duration probeTimeout,
+  required Duration stepTimeout,
+}) async {
+  final JbdAuthResponse appKey;
+  try {
+    appKey = await exchange(
+      JbdAuthProtocol.appKeyFrame(),
+      JbdAuthProtocol.appKeyCommand,
+      password == null ? probeTimeout : stepTimeout,
+    );
+  } on JbdAuthException catch (error) {
+    if (password == null && error.failure == JbdAuthFailure.timeout) {
+      return;
+    }
+    rethrow;
+  }
+  if (appKey.value == JbdAuthProtocol.statusNoPasswordSet) {
+    return;
+  }
+  if (appKey.value != JbdAuthProtocol.statusOk) {
+    throw const JbdAuthException(
+      JbdAuthFailure.appKeyRejected,
+      'The BMS refused the unlock handshake',
+    );
+  }
+  if (password == null) {
+    throw const JbdAuthException(
+      JbdAuthFailure.passwordRequired,
+      'This pack is password protected',
+    );
+  }
+  final mac = JbdAuthProtocol.parseMacAddress(remoteId);
+  if (mac == null) {
+    throw const JbdAuthException(
+      JbdAuthFailure.unsupportedAddress,
+      'This device does not expose a MAC address, which a password-'
+      'protected BMS needs to unlock',
+    );
+  }
+
+  final challenge = await exchange(
+    JbdAuthProtocol.randomByteRequestFrame(),
+    JbdAuthProtocol.randomByteCommand,
+    stepTimeout,
+  );
+  final result = await exchange(
+    JbdAuthProtocol.passwordFrame(
+      password: password,
+      macAddress: mac,
+      randomByte: challenge.value,
+    ),
+    JbdAuthProtocol.passwordCommand,
+    stepTimeout,
+  );
+  if (result.value != JbdAuthProtocol.statusOk) {
+    throw const JbdAuthException(
+      JbdAuthFailure.wrongPassword,
+      'The BMS rejected the password',
+    );
   }
 }

@@ -229,6 +229,10 @@ class JbdAuthResponse {
 /// Why an authentication attempt failed. The UI distinguishes these: a wrong
 /// password is worth re-prompting for, a silent module is not.
 enum JbdAuthFailure {
+  /// The module wants a password and none was supplied — the first contact
+  /// with a locked pack, before the user has entered one.
+  passwordRequired,
+
   /// The module rejected the password itself.
   wrongPassword,
 

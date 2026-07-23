@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:bms_dash/jbd_auth.dart';
 import 'package:bms_dash/jbd_bms.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -277,6 +278,152 @@ void main() {
       expect(
         infoWithProtection(0x8000).activeProtections,
         ['Unknown (0x8000)'],
+      );
+    });
+  });
+
+  group('authenticateJbdModule', () {
+    const remoteId = 'A4:C1:37:04:2D:BE';
+    const probeTimeout = Duration(seconds: 2);
+    const stepTimeout = Duration(seconds: 4);
+
+    /// Answers each command from [responses]; commands not listed throw the
+    /// timeout a real silent module would produce. Records every exchange.
+    JbdAuthExchange scripted(
+      Map<int, int> responses,
+      List<(Uint8List, int, Duration)> log,
+    ) {
+      return (frame, expectedCommand, timeout) async {
+        log.add((frame, expectedCommand, timeout));
+        final value = responses[expectedCommand];
+        if (value == null) {
+          throw const JbdAuthException(
+            JbdAuthFailure.timeout,
+            'The BMS did not answer the unlock request',
+          );
+        }
+        return JbdAuthResponse(command: expectedCommand, value: value);
+      };
+    }
+
+    Future<void> run(JbdAuthExchange exchange, {String? password}) {
+      return authenticateJbdModule(
+        exchange: exchange,
+        remoteId: remoteId,
+        password: password,
+        probeTimeout: probeTimeout,
+        stepTimeout: stepTimeout,
+      );
+    }
+
+    test('a silent module and no password proceeds unauthenticated', () async {
+      // The common case: a module that predates the auth protocol never
+      // answers the probe, and that must not fail the connection.
+      final log = <(Uint8List, int, Duration)>[];
+      await run(scripted(const {}, log));
+
+      expect(log, hasLength(1));
+      expect(log.single.$1, JbdAuthProtocol.appKeyFrame());
+      // The probe uses the short budget so legacy modules don't stall
+      // every connect for the full handshake timeout.
+      expect(log.single.$3, probeTimeout);
+    });
+
+    test('a module reporting no password set proceeds', () async {
+      final log = <(Uint8List, int, Duration)>[];
+      await run(
+        scripted(
+          const {
+            JbdAuthProtocol.appKeyCommand: JbdAuthProtocol.statusNoPasswordSet,
+          },
+          log,
+        ),
+      );
+      expect(log, hasLength(1));
+    });
+
+    test('a locked module with no password asks for one', () async {
+      // The 1.2.0 bug: without this, a locked pack just looked dead and the
+      // password prompt could never appear for a first-time connection.
+      final log = <(Uint8List, int, Duration)>[];
+      await expectLater(
+        run(
+          scripted(
+            const {JbdAuthProtocol.appKeyCommand: JbdAuthProtocol.statusOk},
+            log,
+          ),
+        ),
+        throwsA(
+          isA<JbdAuthException>().having(
+            (e) => e.failure,
+            'failure',
+            JbdAuthFailure.passwordRequired,
+          ),
+        ),
+      );
+      // No challenge/password traffic without a password to send.
+      expect(log, hasLength(1));
+    });
+
+    test('a password runs the full handshake with pinned bytes', () async {
+      final log = <(Uint8List, int, Duration)>[];
+      await run(
+        scripted(
+          const {
+            JbdAuthProtocol.appKeyCommand: JbdAuthProtocol.statusOk,
+            JbdAuthProtocol.randomByteCommand: 0x62,
+            JbdAuthProtocol.passwordCommand: JbdAuthProtocol.statusOk,
+          },
+          log,
+        ),
+        password: '123456',
+      );
+
+      expect(log, hasLength(3));
+      expect(log[0].$3, stepTimeout);
+      expect(log[1].$1, JbdAuthProtocol.randomByteRequestFrame());
+      expect(
+        log[2].$1,
+        JbdAuthProtocol.passwordFrame(
+          password: '123456',
+          macAddress: const [0xa4, 0xc1, 0x37, 0x04, 0x2d, 0xbe],
+          randomByte: 0x62,
+        ),
+      );
+    });
+
+    test('a rejected password fails with wrongPassword', () async {
+      await expectLater(
+        run(
+          scripted(const {
+            JbdAuthProtocol.appKeyCommand: JbdAuthProtocol.statusOk,
+            JbdAuthProtocol.randomByteCommand: 0x62,
+            JbdAuthProtocol.passwordCommand: JbdAuthProtocol.statusRejected,
+          }, []),
+          password: '123456',
+        ),
+        throwsA(
+          isA<JbdAuthException>().having(
+            (e) => e.failure,
+            'failure',
+            JbdAuthFailure.wrongPassword,
+          ),
+        ),
+      );
+    });
+
+    test('a silent module with a saved password still fails loudly', () async {
+      // That module spoke the protocol when the password was saved, so
+      // silence now is a real fault, not a legacy module.
+      await expectLater(
+        run(scripted(const {}, []), password: '123456'),
+        throwsA(
+          isA<JbdAuthException>().having(
+            (e) => e.failure,
+            'failure',
+            JbdAuthFailure.timeout,
+          ),
+        ),
       );
     });
   });
